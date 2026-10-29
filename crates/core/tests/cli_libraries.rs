@@ -1,5 +1,10 @@
 use boox_core::cli_libraries::{calibre_directories, configure_calibre};
 use std::fs;
+
+fn canonical(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    fs::canonicalize(path).expect("canonical path")
+}
+
 #[test]
 fn library_configuration_is_isolated_and_validated() {
     let root = std::env::temp_dir().join(format!("sandflos-libraries-{}", uuid::Uuid::new_v4()));
@@ -13,7 +18,10 @@ fn library_configuration_is_isolated_and_validated() {
         .unwrap();
     configure_calibre(&first, vec![library.clone()]).unwrap();
     configure_calibre(&first, vec![library.clone()]).unwrap();
-    assert_eq!(calibre_directories(&first).unwrap(), vec![library]);
+    assert_eq!(
+        calibre_directories(&first).unwrap(),
+        vec![canonical(&library)]
+    );
     assert!(calibre_directories(&second).unwrap().is_empty());
     assert!(configure_calibre(&first, vec![root.join("missing")]).is_err());
     drop(connection);
@@ -35,7 +43,7 @@ fn selected_library_and_format_resolve_the_expected_book() {
     assert_eq!(books[0].title, "三体");
     assert_eq!(
         calibre_file(&library, 7).unwrap(),
-        library.join("author/book/sample.epub")
+        canonical(library.join("author/book/sample.epub"))
     );
     assert!(calibre_file(&library, 8).is_err());
     drop(db);
@@ -52,7 +60,7 @@ fn explicit_zotero_directory_resolves_local_attachment() {
     let db = rusqlite::Connection::open(data.join("zotero.sqlite")).unwrap();
     db.execute_batch("CREATE TABLE items(itemID INTEGER,key TEXT); CREATE TABLE itemAttachments(itemID INTEGER,path TEXT,linkMode INTEGER); INSERT INTO items VALUES(4,'ABCDEFGH'); INSERT INTO itemAttachments VALUES(4,'storage:book.pdf',0);").unwrap();
     configure_zotero(&config, &data).unwrap();
-    assert_eq!(zotero_directory(&config).unwrap(), Some(data.clone()));
+    assert_eq!(zotero_directory(&config).unwrap(), Some(canonical(&data)));
     let resolved = zotero_attachment(&config, 4, std::time::Duration::from_secs(2)).unwrap();
     assert_eq!(fs::read(&resolved.path).unwrap(), b"pdf");
     drop(resolved);
