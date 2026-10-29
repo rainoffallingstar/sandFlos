@@ -8,7 +8,6 @@ use qrcodegen::{QrCode, QrCodeEcc};
 use serde::Serialize;
 use std::{
     io::{self, IsTerminal, Read},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::PathBuf,
     time::Duration,
 };
@@ -16,6 +15,35 @@ use std::{
 const TOKEN_ENV: &str = "SANDFLOS_TOKEN";
 const STORE_ENV: &str = "SANDFLOS_CREDENTIAL_STORE";
 const TEST_AUTH_ENDPOINT_ENV: &str = "SANDFLOS_TEST_AUTH_BASE_URL";
+const TEST_API_ENDPOINT_ENV: &str = "SANDFLOS_TEST_API_BASE_URL";
+const TEST_OSS_ENDPOINT_ENV: &str = "SANDFLOS_TEST_OSS_BASE_URL";
+
+pub fn test_api_endpoints() -> Result<Option<(String, String)>, CliError> {
+    fn read(name: &str) -> Result<Option<String>, CliError> {
+        match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(invalid_test_endpoint()),
+        }
+    }
+    let api = read(TEST_API_ENDPOINT_ENV)?;
+    let oss = read(TEST_OSS_ENDPOINT_ENV)?;
+    match (api, oss) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(invalid_test_endpoint()),
+        (Some(api), oss) => {
+            let oss = oss.unwrap_or_else(|| api.clone());
+            boox_core::api::ApiEndpoints::loopback(&api, &oss)
+                .map_err(|_| invalid_test_endpoint())?;
+            Ok(Some((api, oss)))
+        }
+    }
+}
+
+fn invalid_test_endpoint() -> CliError {
+    CliError::usage("test API/OSS endpoints must be literal loopback origins; OSS requires API")
+        .with_stable_code("invalid_test_endpoint")
+}
 
 pub fn run(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -44,7 +72,8 @@ pub fn service(options: &GlobalOptions) -> Result<AuthService, CliError> {
     let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(20));
     let client = match std::env::var(TEST_AUTH_ENDPOINT_ENV) {
         Ok(endpoint) => loopback_auth_client(timeout, &endpoint)?,
-        Err(_) => HttpAuthClient::new(timeout),
+        Err(std::env::VarError::NotPresent) => HttpAuthClient::new(timeout),
+        Err(std::env::VarError::NotUnicode(_)) => return Err(invalid_auth_endpoint()),
     };
     Ok(AuthService::new(
         paths,
@@ -54,24 +83,19 @@ pub fn service(options: &GlobalOptions) -> Result<AuthService, CliError> {
     ))
 }
 
+fn invalid_auth_endpoint() -> CliError {
+    CliError::usage("SANDFLOS_TEST_AUTH_BASE_URL must be a literal http(s) loopback origin")
+        .with_stable_code("invalid_test_auth_endpoint")
+}
+
 fn loopback_auth_client(timeout: Duration, endpoint: &str) -> Result<HttpAuthClient, CliError> {
-    let url = url::Url::parse(endpoint).map_err(|_| {
-        CliError::usage("SANDFLOS_TEST_AUTH_BASE_URL is not a valid URL")
-            .with_stable_code("invalid_test_auth_endpoint")
-    })?;
-    let loopback = match url.host() {
-        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(address)) => IpAddr::V4(address) == IpAddr::V4(Ipv4Addr::LOCALHOST),
-        Some(url::Host::Ipv6(address)) => IpAddr::V6(address) == IpAddr::V6(Ipv6Addr::LOCALHOST),
-        None => false,
-    };
-    if !loopback || !matches!(url.scheme(), "http" | "https") {
-        return Err(CliError::usage(
-            "SANDFLOS_TEST_AUTH_BASE_URL must be an http(s) loopback endpoint",
-        )
-        .with_stable_code("invalid_test_auth_endpoint"));
-    }
-    HttpAuthClient::with_base_url(timeout, endpoint).map_err(CliError::from_auth)
+    boox_core::api::ApiEndpoints::loopback(endpoint, endpoint)
+        .map_err(|_| invalid_auth_endpoint())?;
+    let normalized = url::Url::parse(endpoint)
+        .map_err(|_| invalid_auth_endpoint())?
+        .origin()
+        .ascii_serialization();
+    HttpAuthClient::with_base_url(timeout, normalized).map_err(CliError::from_auth)
 }
 
 pub fn credential(options: &GlobalOptions) -> Result<String, CliError> {

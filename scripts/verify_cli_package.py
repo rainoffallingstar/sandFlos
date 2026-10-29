@@ -31,15 +31,9 @@ def file_digest(path: Path) -> str:
 
 
 def safe_package_path(name: str) -> Path:
-    if not name or "\x00" in name:
-        raise SystemExit(f"unsafe package path: {name!r}")
-    normalized = name.replace("\\", "/")
-    if normalized.startswith("/"):
-        raise SystemExit(f"unsafe package path: {name!r}")
-    parts = [part for part in normalized.split("/") if part not in ("", ".")]
-    if not parts or ".." in parts or any(":" in part for part in parts):
-        raise SystemExit(f"unsafe package path: {name!r}")
-    return Path(*parts)
+    if name not in {binary_name(), README, SUM_FILE}:
+        raise SystemExit(f"unsafe or unexpected package path: {name!r}")
+    return Path(name)
 
 
 def read_checksums(path: Path) -> dict[str, str]:
@@ -95,15 +89,16 @@ def verify(root: Path) -> Path:
         raise SystemExit(f"package directory not found: {root}")
     sums_path = root / SUM_FILE
     readme_path = root / README
+    if any(path.is_symlink() or not path.is_file() for path in root.iterdir()):
+        raise SystemExit("package must contain only regular files")
     if not sums_path.is_file():
         raise SystemExit(f"package is missing {SUM_FILE}")
     if not readme_path.is_file() or readme_path.stat().st_size == 0:
         raise SystemExit(f"package is missing a non-empty {README}")
 
     entries = read_checksums(sums_path)
-    missing = {binary_name()} - entries.keys()
-    if missing:
-        raise SystemExit(f"checksum file does not cover: {sorted(missing)}")
+    if set(entries) != {binary_name(), README}:
+        raise SystemExit("checksum file must cover exactly the binary and README")
 
     actual = {
         path.relative_to(root).as_posix()
@@ -137,6 +132,9 @@ def verify(root: Path) -> Path:
             "SANDFLOS_TEST_AUTH_BASE_URL",
         ):
             env.pop(key, None)
+        for key in list(env):
+            if key.startswith("SANDFLOS_TEST_"):
+                env.pop(key)
         config = Path(run_dir) / "config"
         env["SANDFLOS_CONFIG_DIR"] = str(config)
         for option, needle in (("--help", "usage:"), ("--version", "sandflos")):

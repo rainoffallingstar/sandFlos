@@ -1,4 +1,5 @@
 //! Library configuration isolated from the desktop application's global paths.
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -303,6 +304,8 @@ struct WebDavConfig {
     url: String,
     username: String,
     file_store: bool,
+    #[serde(default)]
+    password_base64: bool,
 }
 pub fn configure_webdav_with_store(
     config_dir: &Path,
@@ -339,12 +342,13 @@ pub fn configure_webdav_with_store(
         kind,
         &crate::auth_service::AppPaths::new(config_dir.join("webdav")),
     )
-    .save(password)
+    .save(&BASE64.encode(password.as_bytes()))
     .map_err(|_| "cannot persist WebDAV password with selected credential store")?;
     config.webdav = Some(WebDavConfig {
         url: url.to_string().trim_end_matches('/').into(),
         username: username.into(),
         file_store: matches!(kind, crate::auth_service::CredentialStoreKind::File),
+        password_base64: true,
     });
     save(config_dir, &config)
 }
@@ -371,6 +375,19 @@ fn download_attachment(
     .load()
     .map_err(|_| "WebDAV credentials unavailable")?
     .ok_or("WebDAV password missing")?;
+    // CredentialStore validates BOOX token syntax; encode opaque WebDAV
+    // passwords so whitespace and Unicode survive its persistence boundary.
+    // Older configurations stored the password directly and remain readable.
+    let password = if config.password_base64 {
+        String::from_utf8(
+            BASE64
+                .decode(password.token)
+                .map_err(|_| "invalid WebDAV credential")?,
+        )
+        .map_err(|_| "invalid WebDAV credential")?
+    } else {
+        password.token
+    };
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
         .redirect(reqwest::redirect::Policy::none())
@@ -378,7 +395,7 @@ fn download_attachment(
         .map_err(|_| "cannot build WebDAV client")?;
     let response = client
         .get(format!("{}/{key}.zip", config.url))
-        .basic_auth(&config.username, Some(&password.token))
+        .basic_auth(&config.username, Some(&password))
         .send()
         .map_err(|_| LibraryError::network("WebDAV network failure"))?;
     if !response.status().is_success() {
@@ -419,12 +436,12 @@ fn download_attachment(
         }
         if !file.is_dir()
             && !file.name().split('/').any(|p| p.starts_with('.'))
-            && (selected.is_none() || file.name() == preferred)
+            && file.name() == preferred
         {
             selected = Some(i);
         }
     }
-    let index = selected.ok_or("ZIP has no attachment")?;
+    let index = selected.ok_or("ZIP does not contain the requested attachment")?;
     let directory =
         std::env::temp_dir().join(format!("sandflos-attachment-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&directory).map_err(|_| "cannot create temporary directory")?;

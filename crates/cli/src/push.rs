@@ -32,9 +32,12 @@ pub fn push_paths(options: &GlobalOptions, files: &[PathBuf]) -> Result<(), CliE
 
     let credential = crate::auth::credential(options)?;
     let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(120));
-    let backend = HttpPushBackend::new(timeout, credential)
-        .map_err(CliError::from_service)?
-        .with_cancel_flag(&crate::cancel::FLAG);
+    let backend = match crate::auth::test_api_endpoints()? {
+        Some((api, oss)) => HttpPushBackend::with_test_endpoints(timeout, credential, &api, &oss),
+        None => HttpPushBackend::new(timeout, credential),
+    }
+    .map_err(CliError::from_service)?
+    .with_cancel_flag(&crate::cancel::FLAG);
     let mut service = PushService::new(backend);
     let report = service.push_files(files, |event| {
         if !options.json {

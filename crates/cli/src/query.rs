@@ -119,6 +119,7 @@ fn reading(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
         }
     }
     let date = date.ok_or_else(|| CliError::usage("reading stats requires --date YYYY-MM-DD"))?;
+    boox_core::services::validate_reading_date(date)?;
     let stats = query_service(options)?.reading(date)?;
     if options.json {
         emit_json(serde_json::to_value(&stats).map_err(serialization_error)?)?;
@@ -134,7 +135,11 @@ fn reading(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 fn query_service(options: &GlobalOptions) -> Result<QueryService<HttpQueryBackend>, CliError> {
     let credential = crate::auth::credential(options)?;
     let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(30));
-    let backend = HttpQueryBackend::new(timeout, credential).map_err(CliError::from_service)?;
+    let backend = match crate::auth::test_api_endpoints()? {
+        Some((api, oss)) => HttpQueryBackend::with_test_endpoints(timeout, credential, &api, &oss),
+        None => HttpQueryBackend::new(timeout, credential),
+    }
+    .map_err(CliError::from_service)?;
     Ok(QueryService::new(backend))
 }
 

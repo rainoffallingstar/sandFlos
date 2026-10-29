@@ -14,3 +14,7 @@
 回归：`cargo test --locked -p boox-core --test cli_libraries`，8 passed、0 failed（包含正常 WebDAV 下载与 ZIP 越界拒绝）。配置拒绝无关 SQLite 的测试先因成功接受空数据库而失败，加入必要表校验后通过。配置修改持有 OS 文件锁，避免并发 read-modify-write 覆盖其他书库设置。
 
 集成审查补充：书库错误改为 `LibraryError`，包含类型化 kind 与脱敏 message；WebDAV 401/403 映射认证错误，连接/响应读取映射网络错误。随后补充 401 回归测试（这是审查后的回归测试，不宣称为先 Red 后 Green）。ZIP 越界测试也是已有防护的回归验证。
+
+后续审查补充（2026-10-29）：新增 `webdav_rejects_archive_without_requested_attachment`，回环服务返回只有 `unrelated.pdf` 的 ZIP，首次运行失败（`archive should fail`），确认旧实现会把其他文件作为目标附件。移除任意首文件回退，仅接受 SQLite 指定的附件相对路径；独立回归 `cargo test --locked -p boox-core --test cli_libraries`：10 passed、0 failed（含密码修复）。
+
+同轮新增 `webdav_password_can_contain_spaces`，先因 `WebDAV credentials unavailable` 失败：复用 token 凭据存储会拒绝包含空格的有效 WebDAV 密码。新配置将密码做 Base64 编码后交给凭据后端，配置记录编码标记，下载时解码；Base64 仅做格式适配，存储保护仍由原凭据后端提供。旧无编码标记配置保持可读。回环请求断言实际 Basic Authentication 的字面值以验证密码未被修改。

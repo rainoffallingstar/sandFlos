@@ -5865,6 +5865,7 @@ version = "0.1.0"
 dependencies = [
  "boox-core",
  "qrcodegen",
+ "rusqlite",
  "serde",
  "serde_json",
  "url",

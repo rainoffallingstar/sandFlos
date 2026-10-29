@@ -1,7 +1,10 @@
+use crate::api::create_client;
 use crate::api::{
-    batch_delete_push_message, create_client, fetch_auth_context_and_user, fetch_default_bucket,
-    fetch_push_doc, fetch_push_doc_value, fetch_sts_for_auth, put_existing_push_message_doc,
-    put_push_message_doc, save_and_push,
+    batch_delete_push_message_with_endpoints, fetch_auth_context_and_user_with_endpoints,
+    fetch_default_bucket_with_endpoints, fetch_push_doc_value_with_endpoints,
+    fetch_push_doc_with_endpoints, fetch_sts_for_auth_with_endpoints,
+    put_existing_push_message_doc_with_endpoints, put_push_message_doc_with_endpoints,
+    save_and_push_with_endpoints,
 };
 use crate::dashboard::build_dashboard_snapshot;
 use crate::device::{is_local_transfer_host, normalize_transfer_host_url};
@@ -235,7 +238,8 @@ x-oss-security-token:{}
     }
 }
 
-fn signed_download_url(
+fn signed_download_url_with_endpoints(
+    endpoints: &crate::api::ApiEndpoints,
     bucket: &BucketConfig,
     sts: &OssSts,
     object_key: &str,
@@ -290,7 +294,8 @@ fn signed_download_url(
         })
         .collect::<Vec<_>>();
     Ok(format!(
-        "https://{host}/{object_key}?{}",
+        "{}?{}",
+        endpoints.oss_url(&format!("https://{host}/{object_key}")),
         encoded_pairs.join("&")
     ))
 }
@@ -326,7 +331,8 @@ fn sts_remaining_seconds(sts: &OssSts) -> Option<i64> {
     Some(expiration.timestamp() - Utc::now().timestamp())
 }
 
-pub(crate) fn build_verified_signed_download_url(
+pub(crate) fn build_verified_signed_download_url_with_endpoints(
+    endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     auth: &UploadAuthContext,
     bucket: &BucketConfig,
@@ -335,7 +341,7 @@ pub(crate) fn build_verified_signed_download_url(
     let mut last_err = None;
 
     for attempt in 0..3 {
-        let sts = fetch_sts_for_auth(client, auth)?;
+        let sts = fetch_sts_for_auth_with_endpoints(endpoints, client, auth)?;
         let remaining_secs = sts_remaining_seconds(&sts);
 
         if remaining_secs
@@ -348,7 +354,8 @@ pub(crate) fn build_verified_signed_download_url(
             );
             last_err = Some(err);
         } else {
-            let signed_url = signed_download_url(bucket, &sts, object_key)?;
+            let signed_url =
+                signed_download_url_with_endpoints(endpoints, bucket, &sts, object_key)?;
             match verify_oss_object_via_signed_url(client, &signed_url) {
                 Ok(()) => return Ok(signed_url),
                 Err(err) => last_err = Some(err),
@@ -363,7 +370,8 @@ pub(crate) fn build_verified_signed_download_url(
     Err(last_err.unwrap_or_else(|| "生成可用的签名下载链接失败".to_string()))
 }
 
-pub(crate) fn wait_for_remote_push_doc_ready(
+pub(crate) fn wait_for_remote_push_doc_ready_with_endpoints(
+    endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
@@ -371,7 +379,7 @@ pub(crate) fn wait_for_remote_push_doc_ready(
 ) -> Result<(), String> {
     let mut last_err = None;
     for attempt in 0..8 {
-        match fetch_push_doc(client, auth, doc_id) {
+        match fetch_push_doc_with_endpoints(endpoints, client, auth, doc_id) {
             Ok(detail) if detail.rev == expected_rev => return Ok(()),
             Ok(detail) => {
                 last_err = Some(format!(
@@ -511,14 +519,15 @@ fn upload_single_file_with_metrics(
 }
 
 pub fn perform_native_uploads(files: &[UploadItem]) -> Result<UploadExecutionSummary, String> {
+    let endpoints = &crate::api::ApiEndpoints::production();
     if files.is_empty() {
         return Err("未选择任何文件".to_string());
     }
 
     let client = create_client(60)?;
-    let (auth, _) = fetch_auth_context_and_user(&client)?;
+    let (auth, _) = fetch_auth_context_and_user_with_endpoints(endpoints, &client)?;
     validate_storage_quota(&auth, files)?;
-    let (bucket_key, bucket) = fetch_default_bucket(&client)?;
+    let (bucket_key, bucket) = fetch_default_bucket_with_endpoints(endpoints, &client)?;
 
     let mut success = 0;
     let mut failed = 0;
@@ -567,7 +576,7 @@ pub fn perform_native_uploads(files: &[UploadItem]) -> Result<UploadExecutionSum
             continue;
         }
 
-        let sts = match fetch_sts_for_auth(&client, &auth) {
+        let sts = match fetch_sts_for_auth_with_endpoints(endpoints, &client, &auth) {
             Ok(sts) => sts,
             Err(err) => {
                 failed += 1;
@@ -592,18 +601,24 @@ pub fn perform_native_uploads(files: &[UploadItem]) -> Result<UploadExecutionSum
             continue;
         }
 
-        let signed_url =
-            match build_verified_signed_download_url(&client, &auth, &bucket, &object_key) {
-                Ok(url) => url,
-                Err(err) => {
-                    failed += 1;
-                    errors.push(format!("{file_name}: 生成签名下载链接失败 ({err})"));
-                    continue;
-                }
-            };
+        let signed_url = match build_verified_signed_download_url_with_endpoints(
+            endpoints,
+            &client,
+            &auth,
+            &bucket,
+            &object_key,
+        ) {
+            Ok(url) => url,
+            Err(err) => {
+                failed += 1;
+                errors.push(format!("{file_name}: 生成签名下载链接失败 ({err})"));
+                continue;
+            }
+        };
 
         let resource_type = ext.as_str();
-        let (cb_id, cb_rev) = match put_push_message_doc(
+        let (cb_id, cb_rev) = match put_push_message_doc_with_endpoints(
+            endpoints,
             &client,
             &auth,
             &file_name,
@@ -620,13 +635,16 @@ pub fn perform_native_uploads(files: &[UploadItem]) -> Result<UploadExecutionSum
             }
         };
 
-        if let Err(err) = wait_for_remote_push_doc_ready(&client, &auth, &cb_id, &cb_rev) {
+        if let Err(err) = wait_for_remote_push_doc_ready_with_endpoints(
+            endpoints, &client, &auth, &cb_id, &cb_rev,
+        ) {
             failed += 1;
             errors.push(format!("{file_name}: 推送消息同步确认失败: {err}"));
             continue;
         }
 
-        let save_result = save_and_push(
+        let save_result = save_and_push_with_endpoints(
+            endpoints,
             &client,
             &auth,
             &bucket_key,
@@ -744,9 +762,11 @@ pub fn upload_items_blocking_with_active_task(
 }
 
 pub fn dashboard_push_resend_inner(id: &str) -> Result<(), String> {
+    let endpoints = &crate::api::ApiEndpoints::production();
     let client = create_client(60)?;
-    let (auth, _) = fetch_auth_context_and_user(&client)?;
-    push_resend_with_auth(&client, &auth, id)
+    let (auth, _) = fetch_auth_context_and_user_with_endpoints(endpoints, &client)?;
+    push_resend_with_auth_with_endpoints(endpoints, &client, &auth, id)
+        .map_err(|error| error.to_string())
 }
 
 /// Re-submit an existing push record using an explicitly resolved credential.
@@ -755,107 +775,120 @@ pub fn push_resend_with_auth(
     auth: &UploadAuthContext,
     id: &str,
 ) -> Result<(), String> {
-    if id.trim().is_empty() {
-        return Err("重推记录 id 不能为空".to_string());
-    }
-
-    let (_bucket_key, bucket) = fetch_default_bucket(client)?;
-
-    let mut last_err = None;
-    for attempt in 0..4 {
-        let mut raw_doc = match fetch_push_doc_value(client, auth, id) {
-            Ok(doc) => doc,
-            Err(err) => {
-                last_err = Some(err);
-                if attempt < 3 {
-                    thread::sleep(Duration::from_millis(1_000 * (attempt + 1) as u64));
-                }
-                continue;
-            }
-        };
-
-        let object_key = match raw_doc.get("storageKey").and_then(Value::as_str) {
-            Some(key) if !key.trim().is_empty() => key.to_string(),
-            _ => return Err("推送记录缺少有效的 storageKey".to_string()),
-        };
-
-        let signed_url =
-            match build_verified_signed_download_url(client, auth, &bucket, &object_key) {
-                Ok(url) => url,
-                Err(err) => {
-                    last_err = Some(err);
-                    if attempt < 3 {
-                        thread::sleep(Duration::from_millis(1_000 * (attempt + 1) as u64));
-                    }
-                    continue;
-                }
-            };
-
-        let now_ms = crate::util::unix_ms_now() as u64;
-        update_push_doc_for_resend_at(&mut raw_doc, &signed_url, now_ms)?;
-
-        let push_result = if let Some(_parent_id) = raw_doc
-            .get("parent")
-            .and_then(Value::as_str)
-            .filter(|v| !v.trim().is_empty())
-        {
-            let put_result = put_existing_push_message_doc(client, auth, &raw_doc);
-            if let Ok((_id, rev)) = &put_result {
-                let _ = wait_for_remote_push_doc_ready(client, auth, id, rev);
-            }
-            put_result.map(|_| ()).or_else(|err| {
-                if is_not_found_push_error(&err) {
-                    let file_size = raw_doc.get("size").and_then(Value::as_u64).unwrap_or(0);
-                    let resource_type = "pdf";
-                    let file_name = raw_doc.get("name").and_then(Value::as_str).unwrap_or(id);
-                    put_push_message_doc(
-                        client,
-                        auth,
-                        file_name,
-                        file_size,
-                        resource_type,
-                        &object_key,
-                        &signed_url,
-                    )
-                    .map(|_| ())
-                } else {
-                    Err(err)
-                }
-            })
-        } else {
-            put_existing_push_message_doc(client, auth, &raw_doc).map(|_| ())
-        };
-
-        match push_result {
-            Ok(()) => return Ok(()),
-            Err(err) => {
-                last_err = Some(err);
-                if attempt < 3 {
-                    thread::sleep(Duration::from_millis(1_500 * (attempt + 1) as u64));
-                }
-            }
-        }
-    }
-
-    Err(last_err.unwrap_or_else(|| "重推失败".to_string()))
+    push_resend_with_auth_with_endpoints(&crate::api::ApiEndpoints::production(), client, auth, id)
+        .map_err(|error| error.to_string())
 }
 
-fn is_not_found_push_error(err: &str) -> bool {
-    let lower = err.to_ascii_lowercase();
-    lower.contains("404")
-        || lower.contains("not found")
-        || lower.contains("missing")
-        || lower.contains("deleted")
+/// Distinguish rejected preparation from a write whose result is unconfirmed.
+#[derive(Debug)]
+pub enum ResendError {
+    BeforeSubmission(String),
+    AfterSubmission(String),
+}
+impl From<String> for ResendError {
+    fn from(error: String) -> Self {
+        Self::BeforeSubmission(error)
+    }
+}
+impl std::fmt::Display for ResendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BeforeSubmission(error) | Self::AfterSubmission(error) => f.write_str(error),
+        }
+    }
+}
+impl std::error::Error for ResendError {}
+
+pub fn push_resend_with_auth_with_endpoints(
+    endpoints: &crate::api::ApiEndpoints,
+    client: &Client,
+    auth: &UploadAuthContext,
+    id: &str,
+) -> Result<(), ResendError> {
+    if id.trim().is_empty() {
+        return Err(ResendError::BeforeSubmission("重推记录 id 不能为空".into()));
+    }
+    let (_bucket_key, bucket) = fetch_default_bucket_with_endpoints(endpoints, client)?;
+    let mut raw_doc = fetch_push_doc_value_with_endpoints(endpoints, client, auth, id)?;
+    let object_key = raw_doc
+        .get("storageKey")
+        .and_then(Value::as_str)
+        .filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| "推送记录缺少有效的 storageKey".to_string())?
+        .to_string();
+    let signed_url = build_verified_signed_download_url_with_endpoints(
+        endpoints,
+        client,
+        auth,
+        &bucket,
+        &object_key,
+    )?;
+    update_push_doc_for_resend_at(&mut raw_doc, &signed_url, crate::util::unix_ms_now() as u64)?;
+    // Do not repeat a write after a gateway error or lost response. The
+    // service exposes an unknown result so callers can inspect the queue.
+    let result = put_existing_push_message_doc_with_endpoints(endpoints, client, auth, &raw_doc);
+    if raw_doc
+        .get("parent")
+        .and_then(Value::as_str)
+        .is_some_and(|parent| !parent.trim().is_empty())
+    {
+        match result {
+            Ok((_, rev)) => {
+                wait_for_remote_push_doc_ready_with_endpoints(endpoints, client, auth, id, &rev)
+                    .map_err(ResendError::AfterSubmission)
+            }
+            // An explicit 404 is a confirmed rejection and allows the legacy
+            // parent-record fallback; ambiguous errors never reach it.
+            Err(error) if is_not_found_push_error(&error) => {
+                let size = raw_doc.get("size").and_then(Value::as_u64).unwrap_or(0);
+                let name = raw_doc.get("name").and_then(Value::as_str).unwrap_or(id);
+                let content: Value = serde_json::from_str(
+                    raw_doc
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("{}"),
+                )
+                .map_err(|_| "推送记录 content 解析失败".to_string())?;
+                let resource_type = content
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .unwrap_or("pdf");
+                put_push_message_doc_with_endpoints(
+                    endpoints,
+                    client,
+                    auth,
+                    name,
+                    size,
+                    resource_type,
+                    &object_key,
+                    &signed_url,
+                )
+                .map(|_| ())
+                .map_err(ResendError::AfterSubmission)
+            }
+            Err(error) => Err(ResendError::AfterSubmission(error)),
+        }
+    } else {
+        result.map(|_| ()).map_err(ResendError::AfterSubmission)
+    }
+}
+
+fn is_not_found_push_error(error: &str) -> bool {
+    error
+        .strip_prefix("HTTP ")
+        .and_then(|rest| rest.split_whitespace().next())
+        == Some("404")
 }
 
 pub fn dashboard_push_delete_inner(doc_id: &str) -> Result<(), String> {
+    let endpoints = &crate::api::ApiEndpoints::production();
     if doc_id.trim().is_empty() {
         return Err("删除记录 id 不能为空".to_string());
     }
     let client = create_client(60)?;
-    let (auth, _) = fetch_auth_context_and_user(&client)?;
-    let _ = crate::api::delete_push_doc(&client, &auth, doc_id);
-    batch_delete_push_message(&client, &auth, doc_id)?;
+    let (auth, _) = fetch_auth_context_and_user_with_endpoints(endpoints, &client)?;
+    let _ = crate::api::delete_push_doc_with_endpoints(endpoints, &client, &auth, doc_id);
+    batch_delete_push_message_with_endpoints(endpoints, &client, &auth, doc_id)?;
     Ok(())
 }
 

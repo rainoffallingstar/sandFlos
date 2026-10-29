@@ -133,10 +133,26 @@ fn webdav_rejects_archive_path_traversal() {
     webdav_archive_case("../escape.pdf", false, 200);
 }
 #[test]
+fn webdav_rejects_archive_without_requested_attachment() {
+    webdav_archive_case("unrelated.pdf", false, 200);
+}
+#[test]
 fn webdav_reports_authentication_failures() {
     webdav_archive_case("book.pdf", false, 401);
 }
+#[test]
+fn webdav_password_can_contain_spaces() {
+    webdav_archive_case_with_password("book.pdf", true, 200, "correct horse battery staple");
+}
 fn webdav_archive_case(entry_name: &'static str, accepted: bool, status: u16) {
+    webdav_archive_case_with_password(entry_name, accepted, status, "fake-password");
+}
+fn webdav_archive_case_with_password(
+    entry_name: &'static str,
+    accepted: bool,
+    status: u16,
+    password: &'static str,
+) {
     use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
     use std::io::{Read, Write};
     let root = std::env::temp_dir().join(format!("cli-webdav-{}", uuid::Uuid::new_v4()));
@@ -147,22 +163,33 @@ fn webdav_archive_case(entry_name: &'static str, accepted: bool, status: u16) {
     configure_zotero(&config, &root).unwrap();
     let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/zotero", server.local_addr().unwrap());
-    configure_webdav_with_store(
-        &config,
-        &url,
-        "user",
-        "fake-password",
-        CredentialStoreKind::File,
-    )
-    .unwrap();
+    configure_webdav_with_store(&config, &url, "user", password, CredentialStoreKind::File)
+        .unwrap();
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = server.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match server.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && start.elapsed() < std::time::Duration::from_secs(5) =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(_) => return,
+            }
+        };
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(3)))
             .unwrap();
         let mut request = [0u8; 4096];
         let len = stream.read(&mut request).unwrap();
         assert!(String::from_utf8_lossy(&request[..len]).starts_with("GET /zotero/ABCDEFGH.zip "));
+        if password == "correct horse battery staple" {
+            assert!(String::from_utf8_lossy(&request[..len])
+                .contains("Basic dXNlcjpjb3JyZWN0IGhvcnNlIGJhdHRlcnkgc3RhcGxl"));
+        }
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         zip.start_file(entry_name, zip::write::SimpleFileOptions::default())
             .unwrap();

@@ -79,6 +79,15 @@ def main() -> int:
         raise SystemExit(f"package README not found: {args.readme}")
 
     if replace_output:
+        allowed = {binary_name(), "README.md", "SHA256SUMS"}
+        if output.is_symlink() or not output.is_dir() or any(
+            p.is_symlink() or not p.is_file() or p.name not in allowed
+            for p in output.iterdir()
+        ):
+            raise SystemExit("refusing to replace a directory containing unrelated files")
+        if (output.resolve() in args.binary.resolve().parents
+                or output.resolve() in args.readme.resolve().parents):
+            raise SystemExit("refusing to replace an input directory")
         shutil.rmtree(output)
     output.mkdir(parents=True)
     packaged_binary = output / args.binary.name

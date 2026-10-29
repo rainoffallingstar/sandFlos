@@ -5,16 +5,19 @@
 //! deterministic fakes and observe only the public results.
 
 use crate::api::{
-    batch_delete_push_message, create_client, delete_push_doc, fetch_auth_context_for_token,
-    fetch_day_read, fetch_default_bucket, fetch_devices, fetch_push_queue_for_dashboard,
-    fetch_read_time_info, fetch_reading_info, fetch_storage, fetch_sts_for_auth,
-    put_push_message_doc, save_and_push,
+    batch_delete_push_message_with_endpoints, create_client, delete_push_doc_with_endpoints,
+    fetch_auth_context_for_token_with_endpoints, fetch_day_read_with_endpoints,
+    fetch_default_bucket_with_endpoints, fetch_devices_with_endpoints,
+    fetch_identity_for_token_with_endpoints, fetch_push_queue_for_dashboard_with_endpoints,
+    fetch_read_time_info_with_endpoints, fetch_reading_info_with_endpoints,
+    fetch_storage_with_endpoints, fetch_sts_for_auth_with_endpoints,
+    put_push_message_doc_with_endpoints, save_and_push_with_endpoints,
 };
 use crate::device::build_dashboard_devices;
 use crate::models::{BucketConfig, DashboardDevice, DashboardPushItem, OssSts, UploadAuthContext};
 use crate::push::{
-    build_oss_host, build_verified_signed_download_url, content_type_for, sign_oss,
-    wait_for_remote_push_doc_ready,
+    build_oss_host, build_verified_signed_download_url_with_endpoints, content_type_for, sign_oss,
+    wait_for_remote_push_doc_ready_with_endpoints,
 };
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
@@ -661,12 +664,25 @@ impl<B: PushBackend> PushService<B> {
             ) {
                 Ok(value) => value,
                 Err(error) => {
+                    // A lost write response can hide a committed message.
+                    // Keep the uploaded resource key for queue reconciliation.
+                    let outcome = if matches!(
+                        error.kind,
+                        ServiceErrorKind::Network
+                            | ServiceErrorKind::Protocol
+                            | ServiceErrorKind::Unknown
+                            | ServiceErrorKind::Partial
+                    ) {
+                        PushOutcome::Unknown
+                    } else {
+                        PushOutcome::Failed
+                    };
                     fail_file(
                         &mut on_progress,
                         &mut result,
                         PushStage::WriteMessage,
                         error,
-                        PushOutcome::Failed,
+                        outcome,
                     );
                     results[index] = Some(result);
                     continue;
@@ -930,13 +946,14 @@ impl<B: QueryBackend> QueryService<B> {
         self.backend.storage(&auth)
     }
     pub fn reading(&mut self, date: &str) -> ServiceResult<ReadingStats> {
-        validate_date(date)?;
+        validate_reading_date(date)?;
         let auth = self.backend.auth_context()?;
         self.backend.reading(&auth, date)
     }
 }
 
-fn validate_date(date: &str) -> ServiceResult<()> {
+/// Validate a reading date before resolving credentials or creating a client.
+pub fn validate_reading_date(date: &str) -> ServiceResult<()> {
     let bytes = date.as_bytes();
     let shaped = bytes.len() == 10
         && bytes[4] == b'-'
@@ -958,6 +975,7 @@ fn validate_date(date: &str) -> ServiceResult<()> {
 // ---- HTTP edge adapter -------------------------------------------------
 
 pub struct HttpPushBackend {
+    endpoints: crate::api::ApiEndpoints,
     client: Client,
     timeout: Duration,
     credential: String,
@@ -965,10 +983,29 @@ pub struct HttpPushBackend {
 }
 
 impl HttpPushBackend {
+    pub fn with_test_endpoints(
+        timeout: Duration,
+        credential: impl Into<String>,
+        api: &str,
+        oss: &str,
+    ) -> ServiceResult<Self> {
+        let endpoints = crate::api::ApiEndpoints::loopback(api, oss).map_err(|_| {
+            ServiceError::input(
+                "invalid_test_endpoint",
+                "client",
+                "test endpoints must be literal loopback origins",
+            )
+        })?;
+        let mut value = Self::new(timeout, credential)?;
+        value.endpoints = endpoints;
+        Ok(value)
+    }
+
     pub fn new(timeout: Duration, credential: impl Into<String>) -> ServiceResult<Self> {
         let client = create_client(timeout.as_secs().max(1))
             .map_err(|_| ServiceError::network("client", "无法创建 HTTP 客户端"))?;
         Ok(Self {
+            endpoints: crate::api::ApiEndpoints::production(),
             client,
             timeout,
             credential: credential.into(),
@@ -1004,7 +1041,7 @@ impl HttpPushBackend {
     }
 
     fn auth(&self) -> ServiceResult<UploadAuthContext> {
-        fetch_auth_context_for_token(&self.client, &self.credential)
+        fetch_auth_context_for_token_with_endpoints(&self.endpoints, &self.client, &self.credential)
             .map(|(auth, _)| auth)
             .map_err(|error| classify("auth", error))
     }
@@ -1061,11 +1098,13 @@ impl PushBackend for HttpPushBackend {
     }
     fn default_bucket(&mut self) -> ServiceResult<(String, BucketConfig)> {
         self.check_cancelled()?;
-        fetch_default_bucket(&self.client).map_err(|error| classify("bucket", error))
+        fetch_default_bucket_with_endpoints(&self.endpoints, &self.client)
+            .map_err(|error| classify("bucket", error))
     }
     fn sts(&mut self, auth: &UploadAuthContext) -> ServiceResult<OssSts> {
         self.check_cancelled()?;
-        fetch_sts_for_auth(&self.client, auth).map_err(|error| classify("sts", error))
+        fetch_sts_for_auth_with_endpoints(&self.endpoints, &self.client, auth)
+            .map_err(|error| classify("sts", error))
     }
     fn upload(
         &mut self,
@@ -1096,7 +1135,9 @@ impl PushBackend for HttpPushBackend {
             ServiceError::local_io("file_unreadable", "upload", error.to_string())
         })?;
         let body = reqwest::blocking::Body::sized(file, file_size);
-        let url = format!("https://{host}/{object_key}");
+        let url = self
+            .endpoints
+            .oss_url(&format!("https://{host}/{object_key}"));
         let response = self
             .client
             .put(&url)
@@ -1121,8 +1162,14 @@ impl PushBackend for HttpPushBackend {
         object_key: &str,
     ) -> ServiceResult<String> {
         self.check_cancelled()?;
-        build_verified_signed_download_url(&self.client, auth, bucket, object_key)
-            .map_err(|error| classify("signed_url", error))
+        build_verified_signed_download_url_with_endpoints(
+            &self.endpoints,
+            &self.client,
+            auth,
+            bucket,
+            object_key,
+        )
+        .map_err(|error| classify("signed_url", error))
     }
     fn write_message(
         &mut self,
@@ -1135,7 +1182,8 @@ impl PushBackend for HttpPushBackend {
         signed_url: &str,
     ) -> ServiceResult<(String, String)> {
         self.check_cancelled()?;
-        put_push_message_doc(
+        put_push_message_doc_with_endpoints(
+            &self.endpoints,
             &self.client,
             auth,
             file_name,
@@ -1153,8 +1201,14 @@ impl PushBackend for HttpPushBackend {
         rev: &str,
     ) -> ServiceResult<()> {
         self.check_cancelled()?;
-        wait_for_remote_push_doc_ready(&self.client, auth, doc_id, rev)
-            .map_err(|error| classify("confirm_sync", error))
+        wait_for_remote_push_doc_ready_with_endpoints(
+            &self.endpoints,
+            &self.client,
+            auth,
+            doc_id,
+            rev,
+        )
+        .map_err(|error| classify("confirm_sync", error))
     }
     fn save_and_push(
         &mut self,
@@ -1167,7 +1221,8 @@ impl PushBackend for HttpPushBackend {
         rev: &str,
     ) -> ServiceResult<()> {
         self.check_cancelled()?;
-        save_and_push(
+        save_and_push_with_endpoints(
+            &self.endpoints,
             &self.client,
             auth,
             bucket_key,
@@ -1183,12 +1238,32 @@ impl PushBackend for HttpPushBackend {
 }
 
 pub struct HttpQueueReadBackend {
+    endpoints: crate::api::ApiEndpoints,
     client: Client,
     credential: String,
 }
 impl HttpQueueReadBackend {
+    pub fn with_test_endpoints(
+        timeout: Duration,
+        credential: impl Into<String>,
+        api: &str,
+        oss: &str,
+    ) -> ServiceResult<Self> {
+        let endpoints = crate::api::ApiEndpoints::loopback(api, oss).map_err(|_| {
+            ServiceError::input(
+                "invalid_test_endpoint",
+                "client",
+                "test endpoints must be literal loopback origins",
+            )
+        })?;
+        let mut value = Self::new(timeout, credential)?;
+        value.endpoints = endpoints;
+        Ok(value)
+    }
+
     pub fn new(timeout: Duration, credential: impl Into<String>) -> ServiceResult<Self> {
         Ok(Self {
+            endpoints: crate::api::ApiEndpoints::production(),
             client: create_client(timeout.as_secs().max(1))
                 .map_err(|_| ServiceError::network("client", "无法创建 HTTP 客户端"))?,
             credential: credential.into(),
@@ -1197,21 +1272,41 @@ impl HttpQueueReadBackend {
 }
 impl QueueReadBackend for HttpQueueReadBackend {
     fn auth_context(&mut self) -> ServiceResult<UploadAuthContext> {
-        fetch_auth_context_for_token(&self.client, &self.credential)
+        fetch_identity_for_token_with_endpoints(&self.endpoints, &self.client, &self.credential)
             .map(|(auth, _)| auth)
             .map_err(|e| classify("auth", e))
     }
     fn queue_window(&mut self, auth: &UploadAuthContext) -> ServiceResult<Vec<DashboardPushItem>> {
-        fetch_push_queue_for_dashboard(&self.client, auth).map_err(|e| classify("queue.list", e))
+        fetch_push_queue_for_dashboard_with_endpoints(&self.endpoints, &self.client, auth)
+            .map_err(|e| classify("queue.list", e))
     }
 }
 
 pub struct HttpQueueMutationBackend {
+    endpoints: crate::api::ApiEndpoints,
     client: Client,
     credential: String,
     cancel_flag: Option<&'static std::sync::atomic::AtomicBool>,
 }
 impl HttpQueueMutationBackend {
+    pub fn with_test_endpoints(
+        timeout: Duration,
+        credential: impl Into<String>,
+        api: &str,
+        oss: &str,
+    ) -> ServiceResult<Self> {
+        let endpoints = crate::api::ApiEndpoints::loopback(api, oss).map_err(|_| {
+            ServiceError::input(
+                "invalid_test_endpoint",
+                "client",
+                "test endpoints must be literal loopback origins",
+            )
+        })?;
+        let mut value = Self::new(timeout, credential)?;
+        value.endpoints = endpoints;
+        Ok(value)
+    }
+
     pub fn with_cancel_flag(mut self, flag: &'static std::sync::atomic::AtomicBool) -> Self {
         self.cancel_flag = Some(flag);
         self
@@ -1234,6 +1329,7 @@ impl HttpQueueMutationBackend {
 
     pub fn new(timeout: Duration, credential: impl Into<String>) -> ServiceResult<Self> {
         Ok(Self {
+            endpoints: crate::api::ApiEndpoints::production(),
             client: create_client(timeout.as_secs().max(1))
                 .map_err(|_| ServiceError::network("client", "无法创建 HTTP 客户端"))?,
             credential: credential.into(),
@@ -1244,32 +1340,68 @@ impl HttpQueueMutationBackend {
 impl QueueMutationBackend for HttpQueueMutationBackend {
     fn auth_context(&mut self) -> ServiceResult<UploadAuthContext> {
         self.check_cancelled()?;
-        fetch_auth_context_for_token(&self.client, &self.credential)
+        fetch_identity_for_token_with_endpoints(&self.endpoints, &self.client, &self.credential)
             .map(|(auth, _)| auth)
             .map_err(|e| classify("auth", e))
     }
     fn resend(&mut self, auth: &UploadAuthContext, id: &str) -> ServiceResult<()> {
         self.check_cancelled()?;
-        crate::push::push_resend_with_auth(&self.client, auth, id)
-            .map_err(|e| classify("queue.resend", e))
+        crate::push::push_resend_with_auth_with_endpoints(&self.endpoints, &self.client, auth, id)
+            .map_err(|error| {
+                let submitted = matches!(&error, crate::push::ResendError::AfterSubmission(_));
+                let mut classified = classify("queue.resend", error.to_string());
+                if submitted
+                    && matches!(
+                        classified.kind,
+                        ServiceErrorKind::Network | ServiceErrorKind::Protocol
+                    )
+                {
+                    classified.kind = ServiceErrorKind::Unknown;
+                    classified.code = "resend_unknown";
+                    classified.message = "重推提交结果未知，请先查询队列再决定是否重试".into();
+                }
+                classified
+            })
     }
     fn delete_push_doc(&mut self, auth: &UploadAuthContext, id: &str) -> ServiceResult<()> {
         self.check_cancelled()?;
-        delete_push_doc(&self.client, auth, id).map_err(|e| classify("queue.delete", e))
+        delete_push_doc_with_endpoints(&self.endpoints, &self.client, auth, id)
+            .map_err(|e| classify("queue.delete", e))
     }
     fn delete_message_record(&mut self, auth: &UploadAuthContext, id: &str) -> ServiceResult<()> {
         self.check_cancelled()?;
-        batch_delete_push_message(&self.client, auth, id).map_err(|e| classify("queue.delete", e))
+        batch_delete_push_message_with_endpoints(&self.endpoints, &self.client, auth, id)
+            .map_err(|e| classify("queue.delete", e))
     }
 }
 
 pub struct HttpQueryBackend {
+    endpoints: crate::api::ApiEndpoints,
     client: Client,
     credential: String,
 }
 impl HttpQueryBackend {
+    pub fn with_test_endpoints(
+        timeout: Duration,
+        credential: impl Into<String>,
+        api: &str,
+        oss: &str,
+    ) -> ServiceResult<Self> {
+        let endpoints = crate::api::ApiEndpoints::loopback(api, oss).map_err(|_| {
+            ServiceError::input(
+                "invalid_test_endpoint",
+                "client",
+                "test endpoints must be literal loopback origins",
+            )
+        })?;
+        let mut value = Self::new(timeout, credential)?;
+        value.endpoints = endpoints;
+        Ok(value)
+    }
+
     pub fn new(timeout: Duration, credential: impl Into<String>) -> ServiceResult<Self> {
         Ok(Self {
+            endpoints: crate::api::ApiEndpoints::production(),
             client: create_client(timeout.as_secs().max(1))
                 .map_err(|_| ServiceError::network("client", "无法创建 HTTP 客户端"))?,
             credential: credential.into(),
@@ -1278,17 +1410,18 @@ impl HttpQueryBackend {
 }
 impl QueryBackend for HttpQueryBackend {
     fn auth_context(&mut self) -> ServiceResult<UploadAuthContext> {
-        fetch_auth_context_for_token(&self.client, &self.credential)
+        fetch_identity_for_token_with_endpoints(&self.endpoints, &self.client, &self.credential)
             .map(|(auth, _)| auth)
             .map_err(|e| classify("auth", e))
     }
     fn devices(&mut self, auth: &UploadAuthContext) -> ServiceResult<Vec<DashboardDevice>> {
-        let raw = fetch_devices(&self.client, &auth.bearer).map_err(|e| classify("devices", e))?;
+        let raw = fetch_devices_with_endpoints(&self.endpoints, &self.client, &auth.bearer)
+            .map_err(|e| classify("devices", e))?;
         Ok(build_dashboard_devices(raw, Vec::new()))
     }
     fn storage(&mut self, auth: &UploadAuthContext) -> ServiceResult<StorageReading> {
-        let value =
-            fetch_storage(&self.client, &auth.bearer).map_err(|e| classify("storage", e))?;
+        let value = fetch_storage_with_endpoints(&self.endpoints, &self.client, &auth.bearer)
+            .map_err(|e| classify("storage", e))?;
         let used = crate::util::parse_u64_field(&value, "usedSize")
             .or_else(|| crate::util::parse_u64_field(&value, "used"));
         let limit = crate::util::parse_u64_field(&value, "totalSize")
@@ -1305,11 +1438,19 @@ impl QueryBackend for HttpQueryBackend {
     }
     fn reading(&mut self, auth: &UploadAuthContext, date: &str) -> ServiceResult<ReadingStats> {
         let reading_info =
-            fetch_reading_info(&self.client, &auth.bearer).map_err(|e| classify("reading", e))?;
-        let week = fetch_read_time_info(&self.client, &auth.bearer, date, "week")
-            .map_err(|e| classify("reading", e))?;
-        let day = fetch_day_read(&self.client, &auth.bearer, date, date)
-            .map_err(|e| classify("reading", e))?;
+            fetch_reading_info_with_endpoints(&self.endpoints, &self.client, &auth.bearer)
+                .map_err(|e| classify("reading", e))?;
+        let week = fetch_read_time_info_with_endpoints(
+            &self.endpoints,
+            &self.client,
+            &auth.bearer,
+            date,
+            "week",
+        )
+        .map_err(|e| classify("reading", e))?;
+        let day =
+            fetch_day_read_with_endpoints(&self.endpoints, &self.client, &auth.bearer, date, date)
+                .map_err(|e| classify("reading", e))?;
         Ok(ReadingStats {
             date: date.to_string(),
             reading_info,

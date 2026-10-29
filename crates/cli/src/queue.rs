@@ -9,6 +9,26 @@ use boox_core::{
 };
 use std::time::Duration;
 
+// Keep deferred validation (for ID/confirmation precedence), while preserving
+// local storage errors instead of turning every credential failure into auth.
+fn configuration_error(error: CliError) -> ServiceError {
+    let kind = match error.code {
+        CliErrorCode::Usage => ServiceErrorKind::Input,
+        CliErrorCode::Auth => ServiceErrorKind::Authentication,
+        CliErrorCode::Network => ServiceErrorKind::Network,
+        CliErrorCode::LocalIo => ServiceErrorKind::LocalIo,
+        CliErrorCode::Partial => ServiceErrorKind::Partial,
+        CliErrorCode::Cancelled => ServiceErrorKind::Cancelled,
+        CliErrorCode::Internal => ServiceErrorKind::Internal,
+    };
+    let code = match error.stable_code.as_deref() {
+        Some("missing_credentials") => "missing_credentials",
+        Some("invalid_test_endpoint") => "invalid_test_endpoint",
+        _ => "credential_resolution_failed",
+    };
+    ServiceError::new(kind, code, "configuration", error.message)
+}
+
 struct DeferredQueueReadBackend {
     options: GlobalOptions,
     timeout: Duration,
@@ -32,15 +52,18 @@ impl DeferredQueueReadBackend {
 
     fn backend(&mut self) -> ServiceResult<&mut HttpQueueReadBackend> {
         if self.inner.is_none() {
-            let credential = crate::auth::credential(&self.options).map_err(|_| {
-                ServiceError::new(
-                    ServiceErrorKind::Authentication,
-                    "missing_credentials",
-                    "auth",
-                    "尚未登录，请先导入 token 或完成扫码登录",
-                )
-            })?;
-            self.inner = Some(HttpQueueReadBackend::new(self.timeout, credential)?);
+            let credential = crate::auth::credential(&self.options).map_err(configuration_error)?;
+            self.inner = Some(
+                match crate::auth::test_api_endpoints().map_err(configuration_error)? {
+                    Some((api, oss)) => HttpQueueReadBackend::with_test_endpoints(
+                        self.timeout,
+                        credential,
+                        &api,
+                        &oss,
+                    )?,
+                    None => HttpQueueReadBackend::new(self.timeout, credential)?,
+                },
+            );
         }
         Ok(self.inner.as_mut().expect("initialized queue backend"))
     }
@@ -82,15 +105,19 @@ impl DeferredQueueMutationBackend {
 
     fn backend(&mut self) -> ServiceResult<&mut HttpQueueMutationBackend> {
         if self.inner.is_none() {
-            let credential = crate::auth::credential(&self.options).map_err(|_| {
-                ServiceError::new(
-                    ServiceErrorKind::Authentication,
-                    "missing_credentials",
-                    "auth",
-                    "尚未登录，请先导入 token 或完成扫码登录",
-                )
-            })?;
-            self.inner = Some(HttpQueueMutationBackend::new(self.timeout, credential)?);
+            let credential = crate::auth::credential(&self.options).map_err(configuration_error)?;
+            self.inner = Some(
+                match crate::auth::test_api_endpoints().map_err(configuration_error)? {
+                    Some((api, oss)) => HttpQueueMutationBackend::with_test_endpoints(
+                        self.timeout,
+                        credential,
+                        &api,
+                        &oss,
+                    )?,
+                    None => HttpQueueMutationBackend::new(self.timeout, credential)?,
+                }
+                .with_cancel_flag(&crate::cancel::FLAG),
+            );
         }
         Ok(self.inner.as_mut().expect("initialized queue backend"))
     }

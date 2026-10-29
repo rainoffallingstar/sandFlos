@@ -1,121 +1,77 @@
 # CLI 改造交班记录
 
-日期：2026-10-29。分支 `cli`。交接时的实现提交为 `b7e52bc feat(cli): implement standalone sandflos command-line interface`，之后是跨平台测试与 lint 修复 `d362e7f`、`6306364`。前置提交 `791b361` 只做桌面 autostart 依赖隔离，`9a3e009` 是审查与 TDD 方案。
+日期：2026-10-29。仓库 `/home/fallingstar10/shire/sandFlos`，目标分支 `cli`。本轮从已推送的 `3d79aef` 继续；打包切片提交为 `a7b7e35`。最终集成提交与远端 CI 结果在验收后补入本文件。
 
-本文只描述当前可复现的状态。没有执行过的平台、真实账号和真实云端操作都明确标为未验证。
+## 进度
 
-## 1. 现在处于什么进度
+M1/M2 命令入口与独立 CLI 已实现。本轮补齐真实 HTTP 回环协议、真实二进制进程、书库选书推送和下载产物验收，并修复测试暴露的失败语义。尚未进行真实账号、扫码和设备接收验收，不能将合成协议夹具视为生产服务验收。
 
-M1 与 M2 的命令入口都已在 `crates/cli` 落地，`boox-core` 拆出可注入的服务层和认证服务；本机 Linux 上构建、测试、lint、依赖边界检查和 release smoke 全部通过，远端 Linux/macOS/Windows 三平台 CI 与 macOS 桌面兼容检查也已通过。尚未完成的是端到端协议验收、平台凭据与二维码的人工 smoke、真实云端与设备验收，具体缺口见第 5 节。
+已有命令：
 
-交接时 HEAD 为本文档的提交，工作区干净，且已推送到 `origin/cli`。
+- 帮助、版本、诊断、显式配置迁移；离线启动不创建配置目录。
+- token 导入/状态/验证/退出、交互终端二维码；独立配置目录，环境 token 优先，平台凭据或显式文件存储。
+- 本地文件推送及逐文件报告，流式 OSS body，单文件 200 MiB 与配额前置检查。
+- 队列列表、重推、显式 `--yes` 删除；设备列表/互传地址、空间、阅读统计。
+- Calibre 配置/状态/列表/按 data-id 推送；Zotero 显式目录、列表、本地附件/WebDAV 与统一推送。
 
-已实现并可运行：
+## 本轮审查已修复（不要回退）
 
-- `sandflos --help`、`--version`，不创建配置目录、不联网。
-- `auth import --token-stdin`、`auth status [--verify]`、`auth logout`、`auth login --qr`；独立配置目录、环境 token 优先、文件凭据原子替换与 0600/0700 权限、导入前服务端验证。
-- `push FILE...`，逐文件阶段与结果、部分成功/未知退出 6、200 MiB 与配额前置校验、流式上传请求体（`Body::sized`）。
-- `queue list/resend/delete`，默认 30 条上游窗口、删除必须 `--yes`、两步删除部分完成退出 6。
-- `devices list/transfer-url`、`storage status`、`reading stats --date`。
-- `calibre configure/status/list/push`，只读 SQLite，按 `data-id` 精确取格式。
-- `zotero configure/detect/status/list/webdav configure/push`，显式目录、本地附件优先、缺失时 WebDAV 下载并清理临时文件。
-- `config migrate`、`diagnostics`，离线、脱敏输出。
-- `--json` 单一信封、稳定错误码与退出码；`--verbose` 仅在失败时向 stderr 追加分类行。
+- 核心端点通过 `ApiEndpoints` 显式传入，不读取测试环境变量。CLI API-only 测试地址默认同源 OSS；孤立 OSS、非法 origin、非 Unicode 设置明确退出 2，不能回退线上。认证地址采用同一限制。
+- `saveAndPush` 与重推写入仅提交一次；重推 502 实际 Red 曾记录到 4 次写入，现在返回 unknown / 退出 6。
+- 写消息响应失败保留 unknown 与 resource key；同步未确认或最终提交失败保留消息 ID；不能报告成功。
+- 上传配额接口失败立即停止；只读查询/队列只解析身份，不依赖额外统计请求。
+- 重推父消息 404 后重建保留原格式，EPUB 不再变为 PDF。
+- 队列保留两步删除结果、404 幂等和部分完成；凭据存储错误保持退出 5，变更后端接入取消标记。
+- neocloud 不再创建固定 20 秒的隐藏客户端；复用 CLI 客户端，使 `--timeout` 对这类请求生效，路径范围 Cookie 仍保留。
+- 日期格式/合法性先于凭据解析；无账号的非法日期仍退出 2。
+- WebDAV ZIP 只接受数据库指定附件；含空格密码可持久化，旧密码配置兼容。Base64 仅做格式适配，保护仍取决于凭据后端。
+- 打包验证严格检查二进制、README、SHA256SUMS 与权限，拒绝多余文件、危险 ZIP、符号链接；`--force` 拒绝覆盖无关文件或输入目录。
 
-## 2. 本地验证证据
+此前的凭据原子替换、配置锁、HTTP 输出脱敏、WebDAV 大小/路径限制与临时文件清理保留。
 
-在 `/home/fallingstar10/shire/sandFlos` 执行，全部通过：
+## 验证
+
+本轮本机 Linux 统一检查通过：156 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release 构建、桌面依赖隔离、无显示 smoke、打包与运行验证全部通过。远端新增三平台下载验收仍待本轮 CI 结果。
 
 ```bash
-cargo fmt -p boox-core -p sandflos-cli -- --check
-cargo test --locked -p boox-core -p sandflos-cli
-cargo clippy --locked -p boox-core -p sandflos-cli --all-targets -- -D warnings
-cargo build --locked --release -p sandflos-cli
 bash scripts/check_cli.sh
 ```
 
-测试合计 121 项、0 失败：core unit 80、`cli_libraries` 8、`credential_lock` 1、`push_cancellation` 1、CLI 单元 2、auth 13、migration 1、process contract 7、push/queue 8。
+该脚本包含 Python 进程测试、Rust 测试、fmt、严格 clippy、release、依赖闭包、无显示启动与本地产物验证。HTTP 测试使用真实适配器和回环 TCP；CLI 测试运行真实子进程；SQLite 使用临时真实数据库。
 
-`scripts/check_cli.sh` 还验证了 CLI normal 依赖闭包不含 gpui/gpui-component/tauri/rfd/tray-icon/auto-launch，并在清空 `DISPLAY`、`WAYLAND_DISPLAY`、`SANDFLOS_TOKEN` 的空临时配置目录下运行 release 二进制的 `--help`/`--version`，确认不会创建配置目录。
+交班基线 `3d79aef` 的 121 项 Rust 测试与三平台 CLI CI、macOS 桌面编译已通过。基线 run 为 `40963914110`；本轮新增的三平台 `verify-package` 必须查看新 run 后才能记为通过。
 
-Linux 凭据存储需显式 `SANDFLOS_CREDENTIAL_STORE=file` 或使用 `SANDFLOS_TOKEN`；平台默认在 Linux 返回 `credential_store_unavailable`，这是有意行为，不要改成静默回退明文。
+Linux 默认无可用凭据后端时，应使用 `SANDFLOS_TOKEN` 或显式 `SANDFLOS_CREDENTIAL_STORE=file`；不要静默降级明文存储。
 
-三平台 workflow 写在 `.github/workflows/cli.yml`。远端 `CLI` workflow 在提交 `6306364` 上已运行完成：`cli (ubuntu-latest)`、`cli (macos-latest)`、`cli (windows-latest)` 与 `desktop-compatibility` 全部 success。此前 `cc873fb` 与 `d362e7f` 的 macOS/Windows 失败已定位并修复：书库测试改为比较双方 canonicalize 后的路径；平台 keyring 分支的 `needless_return` 已清理。CI 通过仅覆盖自动测试、lint、release 构建与 smoke，不覆盖真实账号、扫码、云端推送与设备接收。
+## 关键文件与证据
 
-## 3. 关键实现位置
-
-| 关注点 | 位置 |
+| 位置 | 内容 |
 | --- | --- |
-| 参数解析与全局选项 | `crates/cli/src/args.rs` |
-| 错误码到退出码映射 | `crates/cli/src/error.rs` |
-| JSON 信封与 stderr 约定 | `crates/cli/src/output.rs` |
-| 认证、配置目录、凭据后端选择 | `crates/cli/src/auth.rs`、`crates/core/src/auth_service.rs` |
-| 推送报告与阶段语义 | `crates/core/src/services.rs` 的 `PushService`/`PushReport` |
-| 队列与只读查询服务 | `crates/core/src/services.rs` 的 `QueueService`/`QueryService` |
-| HTTP 边界适配器 | `crates/core/src/services.rs` 末尾 `Http*Backend` |
-| 书库配置与 SQLite/WebDAV | `crates/core/src/cli_libraries.rs` |
-| 原子替换（含 Windows） | `crates/core/src/persistence.rs` |
-| 依赖边界与无显示 smoke | `scripts/check_cli_artifact.py` |
-| 产物打包与下载验收 | `scripts/package_cli.py`、`scripts/verify_cli_package.py` |
+| `docs/cli.md` | 安装、命令、配置与退出码 |
+| `crates/core/src/services.rs` | 公共推送/队列/查询服务与 HTTP 适配器 |
+| `crates/core/src/api.rs`、`push.rs` | 显式端点、消息协议与提交语义 |
+| `crates/cli/src/auth.rs`、`queue.rs`、`query.rs` | 进程配置、错误映射与参数优先级 |
+| `crates/core/tests/http_failure_paths.rs` | 真实 HTTP 协议与失败分类 |
+| `crates/cli/tests/query_queue_e2e.rs`、`failure_paths.rs`、`query_validation.rs` | 进程成功/失败/输入契约 |
+| `crates/cli/tests/library_push_e2e.rs` | 真实 SQLite 选中格式进入 OSS，确认数据库不变 |
+| `scripts/check_cli.sh`、`package_cli.py`、`verify_cli_package.py` | 统一检查、打包、下载后执行 |
+| `tdd-http.md`、`cli-libraries-execution.md` | 实际 Red/Green 与回归测试的区别 |
+| `tdd-integration.md`、`cli-artifact-verification.md` | 集成与产物证据 |
 
-## 4. 审查中已修正的问题（不要回退）
+## 剩余验收与已知限制
 
-- `save_and_push` 失败或同步未确认时记为 `unknown`，不再计入成功。
-- 队列部分删除、重推提交超时保留结构化结果并退出 6。
-- `fetch_auth_context_for_token` 让 CLI 使用显式凭据，不读桌面全局登录态。
-- HTTP 错误按状态码分类，输出不含服务端响应正文；认证拒绝不回显 body。
-- `auth import` 先验证再落盘；环境 token 生效时拒绝导入和扫码。
-- 配置写入使用文件锁与原子替换，Windows 不走“先删除旧文件”路径。
-- WebDAV 限制下载/解压各 200 MiB、拒绝跨主机重定向、拒绝 ZIP 越界路径与符号链接，失败清理临时目录。
-- 书库以只读方式打开，Calibre/Zotero 路径限制在配置目录内。
+- macOS Keychain、Windows Credential Manager 的真实写入/读取和 Windows ACL；终端二维码可扫码性。
+- 真实 BOOX/OSS/neocloud 账号、上游业务码及设备接收。云端接受与设备收到分别记录，不提交凭据和签名 URL。
+- 200 MiB 文件的实际内存/吞吐、慢链路、连接中断与取消 smoke；自动测试目前证明边界拒绝和流式 body，不能替代性能验收。
+- 桌面人工回归；macOS CI 仅执行桌面 `cargo check`。
+- `create_client_with_base_url` 仍是仅校验 URL 再创建客户端的旧 helper，命名可后续整理；真实认证请求通过 `_at` 接口指定 origin。
+- `zotero detect` 明确返回不支持，使用显式目录；不应未经跨平台验证改成自动探测。
+- `--timeout` 是请求级超时，包含 neocloud；读操作轮询可能发生多次请求，不表示整条命令的统一截止时间。
 
-## 5. 剩余缺口（按优先级）
+## 下一位 agent
 
-### P1 端到端协议测试仍缺
-
-现有服务测试多数注入假后端。只有认证适配器有针对回环 HTTP 的测试（`auth_service.rs` 中 `http_adapter_*`）。以下没有真实 HTTP 契约测试：
-
-- 推送的 STS、OSS PUT、neocloud 写消息、同步确认、`saveAndPush` 请求形状与错误分类。
-- 队列 `_changes` 读取、`resend`、两步删除的请求路径/方法/鉴权头与 404 语义。
-- 查询接口的设备、存储、阅读统计。
-
-建议先加 `crates/core/tests/fixtures/` 下的脱敏样本与回环服务器，再按 T5、T8、T9 的公共边界补测试。`HttpPushBackend` 的上传地址目前由 `build_oss_host` 生成并以 `https://` 固定，若要回环验证需要新增仅测试可用的端点注入点，且不能放宽生产地址校验。
-
-### P1 进程级 happy path 未覆盖
-
-CLI 进程测试目前覆盖参数错误、认证生命周期、迁移和诊断；推送、队列、设备、存储、阅读、Calibre/Zotero 的真实命令只验证了部分前置校验。至少应补：
-
-- 用本地 fixture 服务完成一次 `push` 并断言 JSON `data.files`、退出码和请求序列。
-- `queue list/resend/delete --yes` 的成功、404 幂等、部分完成。
-- `devices/storage/reading` 的 JSON 字段与错误退出码。
-- `calibre push` / `zotero push` 从书库文件进入公共推送流程。
-
-### P2 跨平台与产物验收
-
-- macOS Keychain 与 Windows Credential Manager 已有编译和测试覆盖，但未有真实凭据写入/读取的 smoke 记录；Windows ACL 未验证。
-- 终端二维码可扫码性需人工 smoke；自动化只验证非 TTY 拒绝。
-- 产物打包与下载验收已补齐：workflow 使用共用打包脚本，三平台 `verify-package` 任务会下载本 run 的 artifact ZIP，检查内容、校验和、可执行位并在无显示环境运行 `--help`/`--version`。实现与本地证据见 `cli-artifact-verification.md`；三平台新任务仍需下一次 CI run 证实。
-- 桌面 `send2boox-desktop-gpui` 已在 macOS CI 做 `cargo check` 并通过；本机未构建，桌面人工回归尚未执行。
-
-### P2 真实服务验收
-
-未访问真实 BOOX 账号、OSS、neocloud、设备或生产队列；未执行真实上传、重推、删除。云端接受与设备实际收到是两个层次，需分别记录账号类别、设备、版本与时间。
-
-### P3 小问题
-
-- `crates/core/src/api.rs` 的 `create_client_with_base_url` 只校验 URL，实际仍创建默认客户端；函数名容易误导。认证路径已通过 `_at` 函数使用注入端点，但该 helper 应删除或改名。
-- `push` 的 `--` 终止符只在 `push` 子命令保留，其他命令的文件路径含 `-` 时需要用 `--`，行为需在文档中明确。
-- `zotero detect` 在 CLI 固定返回 `zotero_detection_unsupported`，这是设计选择，不要在没有跨平台验证前改成自动探测。
-
-## 6. 下一位 agent 的接手步骤
-
-1. `git fetch && git checkout cli && git status`，确认 HEAD 与远端一致、工作区干净。
-2. `bash scripts/check_cli.sh` 复跑基线；若只在 Linux，记录凭据后端是显式 `file`。远端三平台 CI 基线为 `6306364`，可作为比较起点。
-3. 先做第 5 节 P1 的回环协议测试，按 Red/Green 记录，不要用假后端测试冒充端到端通过。
-4. 推送后在 GitHub Actions 查看 `CLI` workflow 的 `cli` 与 `verify-package` 三平台结果，再决定跨平台项是否关闭。
-5. 真实账号验收单独执行，不放入日常单测，不提交 token、Cookie、签名 URL 或响应正文。
-6. 更新 `docs/plans/tdd-integration.md` 的证据与本文件的缺口状态；不要把未运行的平台或云端项写成通过。
-
-## 7. 交接时的明确结论
-
-本地 CLI 已可构建并在无显示环境启动，核心工作流与脚本契约已实现，121 项测试与严格 lint 通过；三平台 CI 与 macOS 桌面编译检查也已通过。产物下载校验现已实现并完成本地与真实 Linux artifact 验证，三平台新任务待下一次 CI 确认。它还不是“已完成真实云端验收”的状态；主要风险集中在真实 HTTP 契约、进程级 happy path、平台凭据与二维码的人工 smoke，以及真实设备接收。
+1. 先 `git status`、`git log -5 --oneline`，保留工作区改动；不要假设交班时必然干净，不要覆盖已有实现。
+2. 读取本文件与 `tdd-http.md`，只复跑需要的统一检查，不重做已完成切片。
+3. 根据本文件精确提交/run 检查三平台 `cli`、`verify-package` 和桌面兼容结果；如仍 pending，先收尾 CI。
+4. 真实账号与平台人工 smoke 单独记录。HTTP 夹具为合成数据，不夸大为生产协议已全量验证。
+5. 新修复继续在 S1–S4 公共边界做 Red/Green；不要把并行编译错误计入 TDD Red。

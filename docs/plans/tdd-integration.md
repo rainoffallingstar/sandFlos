@@ -1,33 +1,35 @@
 # CLI 集成验证记录
 
-日期：2026-10-29。用户授权按 `cli-review-and-tdd.md` 实施，S1–S4 为公共测试边界。实施使用三个 DeepSeek V4.1 Flash / high 子 agent；主 agent 负责书库、协调、集成和审查。接手时工作区已有未提交实现；不将已有实现的回归测试冒充 Red/Green。
+日期：2026-10-29。用户授权按 `cli-review-and-tdd.md` 实施，S1–S4 为公共测试边界。实施和后续补齐使用 DeepSeek V4.1 Flash / high 子 agent；协调 agent 负责接口衔接、书库、失败语义、集成和审查。已有实现的回归测试不冒充 Red/Green。
 
-## 架构与功能
+## 实现与审查
 
-- 新增独立 `sandflos-cli`，二进制 `sandflos`，默认 workspace 成员为 core 与 CLI。
-- `auto-launch` 从 core 移到桌面 app；CLI 的依赖闭包单独检查。
-- CLI 独立认证、配置与 JSON 输出；推送使用逐文件报告，队列操作不刷新桌面仪表盘。
-- Calibre 与 Zotero 使用显式目录和只读 SQLite；WebDAV 有大小限制、路径检查和临时文件清理。
-- 三平台 CI 运行 CLI 测试、lint、release 构建与产物 smoke；macOS 另设桌面编译检查。
+- 独立 `sandflos-cli`，二进制 `sandflos`；默认 workspace 成员为 core 与 CLI，autostart 依赖留在桌面 app。
+- CLI 独立认证、配置目录、JSON 信封、错误码与逐文件报告；业务服务不刷新仪表盘，不读桌面全局凭据。
+- HTTP 端点显式注入，CLI 测试设置仅接受字面回环 origin；API-only 使用同源 OSS，无效配置不能回退线上。认证入口采用相同限制。
+- 上传配额查询失败即停止；只读查询和队列不依赖存储统计接口。`saveAndPush` 和重推写入不盲重试，写消息/同步/最终提交结果不明保留 unknown；重推的 404 重建保留原格式。
+- neocloud 复用调用方 HTTP 客户端，继承请求超时和重定向策略；同步 Cookie 按实际请求 URL 的 domain/path/secure 规则选取。
+- 队列删除保留两步结果、404 幂等、部分完成退出 6；本地凭据错误保持退出 5，取消标记传入变更后端。
+- Calibre、Zotero 使用只读 SQLite 与显式目录；WebDAV ZIP 必须包含所选附件，含空格密码可存取，下载限制、路径检查和临时清理保留。
+- 打包和消费端验证共用脚本；验证内容、SHA-256、可执行位和无显示启动，拒绝额外文件、符号链接与危险归档；`--force` 不覆盖无关文件。
 
-## 证据与审查
+## 测试证据
 
-书库 Red/Green 和回归记录见 `cli-libraries-execution.md`。早期认证记录见 `tdd-auth.md`，其中列出的未完成项以本次收尾记录为准。其他模块的实际执行记录随各 agent 完成写入。
+- 书库实际 Red/Green：`cli-libraries-execution.md`。
+- HTTP、CLI 失败语义与实际 Red/Green：`tdd-http.md`。
+- 凭据与早期认证：`tdd-auth.md`；早期服务：`tdd-services.md`。
+- 打包、下载验证：`cli-artifact-verification.md`。
 
-审查期间修复的重点：导入 token 前服务端验证、凭据按配置目录隔离、文件原子替换、HTTP 错误脱敏、配置错误退出码、取消处理、clippy 告警、重复测试属性与认证测试夹具。最后一轮发现文档列出的 `diagnostics` 尚未接入，现已补上离线、脱敏的诊断命令及其进程测试；`--verbose` 现在在失败时向 stderr 追加错误分类与退出码。
+交班基线提交 `3d79aef` 的 121 项 Rust 测试、本地检查、Linux/macOS/Windows CLI CI 与 macOS 桌面编译均通过。本轮最终 Linux 统一检查已通过：156 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release、依赖边界、无显示 smoke、打包与本地产物运行均通过。远端新 run 记录见 `cli-handoff.md`。
+
+统一命令：
+
+```bash
+bash scripts/check_cli.sh
+```
+
+它执行 Python 进程测试、rustfmt、两 crate Rust 测试、严格 clippy、release 构建、依赖闭包检查、无显示 smoke、打包与本地产物运行验证。workflow 额外在三平台下载本 run 的 artifact ZIP，再在对应 runner 验证并运行。
 
 ## 验收边界
 
-本机为 Linux。macOS/Windows CI 尚未在本机执行，平台凭据后端、Windows ACL、终端二维码可扫码性、真实云端推送和设备接收均需单独验收。云端接受不等于设备已收到。配置了 CI 不代表 CI 已通过。
-
-## 最终本地验证
-
-- `cargo fmt -p boox-core -p sandflos-cli -- --check`：通过。
-- `cargo test --locked -p boox-core -p sandflos-cli`：80 core unit、8 library integration、1 credential lock、1 push cancellation、2 CLI binary unit、13 auth、1 migration、7 process contract、8 push/queue，共 121 项，全部通过。
-- `cargo clippy --locked -p boox-core -p sandflos-cli --all-targets -- -D warnings`：通过。
-- `bash scripts/check_cli.sh`：执行 rustfmt、测试、CLI lint、release 构建、依赖边界与无显示 smoke。
-- 未提交推送；最终提交与 `cli` 分支推送由协调 agent 在整体审查后统一执行。
-
-## 产物下载验收补充
-
-`scripts/check_cli.sh` 现在还会运行打包脚本单元测试，并在 release 构建后生成 `target/cli-package`、核对 SHA-256、可执行位与无显示启动。`CLI` workflow 新增三平台 `verify-package` 任务，通过 GitHub API 下载本 run 上传的 ZIP 后再在对应平台解压执行。实现和证据见 `cli-artifact-verification.md`。本地已验证 7 项脚本测试、全新打包，以及 CI run `40963914110` 的真实 Linux artifact；macOS/Windows 新任务需下一次 CI 运行确认。
+HTTP 夹具使用合成协议数据，未抓取生产样本。真实 BOOX 账号、云端业务码、设备接收、平台凭据写入/读取、Windows ACL、二维码可扫码性、大文件实际内存/吞吐、慢链路与取消 smoke 仍需单独验收。云端接受与设备收到分开记录。CI 文件存在不代表本轮 CI 已通过；精确提交和 run 以交班记录为准。
