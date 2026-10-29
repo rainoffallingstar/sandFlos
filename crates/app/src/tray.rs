@@ -37,7 +37,7 @@ pub fn setup_tray() -> Result<(), String> {
     let refresh_item = MenuItem::new("刷新仪表盘", true, None);
     let reading_stats_item = MenuItem::new("阅读统计指标: 未授权", false, None);
 
-    let autostart_enabled = boox_core::autostart::is_auto_launch_enabled();
+    let autostart_enabled = crate::autostart::is_auto_launch_enabled();
     let autostart_text = if autostart_enabled {
         "开机自启动: 开"
     } else {

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+auto-launch = "0.5"
 boox-core = { path = "../core" }
 gpui = { version = "0.2.2", default-features = false, features = ["runtime_shaders"] }
 gpui-component = "0.5.1"

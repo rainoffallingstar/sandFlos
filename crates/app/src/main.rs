@@ -1,3 +1,4 @@
+mod autostart;
 mod components;
 mod state;
 mod tray;
@@ -114,7 +115,7 @@ fn main() {
                                 });
                             }
                             tray::TrayAction::ToggleAutostart => {
-                                if let Ok(new_status) = boox_core::autostart::toggle_auto_launch() {
+                                if let Ok(new_status) = crate::autostart::toggle_auto_launch() {
                                     tray::update_autostart_label(new_status);
                                 }
                             }

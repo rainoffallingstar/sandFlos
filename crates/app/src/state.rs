@@ -118,7 +118,7 @@ impl AppState {
     pub fn new() -> Self {
         boox_core::state::hydrate_auth_state();
         boox_core::diagnostics::init();
-        boox_core::autostart::initialize_auto_launch_default();
+        crate::autostart::initialize_auto_launch_default();
 
         Self {
             snapshot: None,

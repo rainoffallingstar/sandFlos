@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-auto-launch = "0.5"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dirs = "5.0"
@@ -23,3 +22,6 @@ url = "2.5"
 urlencoding = "2.1"
 uuid = { version = "1.10", features = ["v4"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }

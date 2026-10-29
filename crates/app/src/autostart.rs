@@ -37,7 +37,7 @@ pub fn toggle_auto_launch() -> Result<bool, String> {
 }
 
 pub fn initialize_auto_launch_default() {
-    let dir = crate::state::app_data_dir();
+    let dir = boox_core::state::app_data_dir();
     let marker_path = dir.join(AUTOSTART_MARKER);
     if !marker_path.exists() {
         if let Ok(auto) = build_auto_launch() {
