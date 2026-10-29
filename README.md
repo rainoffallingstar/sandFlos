@@ -91,6 +91,10 @@ cargo test --workspace
 - 本地数据（登录态、Zotero / Calibre 配置）默认位于
   `~/Library/Application Support/com.fallingstar.send2boox/`。
 
+## CLI 改造计划
+
+纯 CLI 形态的[架构审查与完整 TDD 方案](docs/plans/cli-review-and-tdd.md)已记录，涵盖无浏览器认证、脚本输出契约、业务解耦、测试切片与跨平台验收。当前为方案阶段，CLI 尚未实现。
+
 ## License
 
 UNLICENSED · © Fallingstar Team
