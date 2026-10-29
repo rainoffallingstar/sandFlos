@@ -38,11 +38,13 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
           path = Path('cli-check.log')
           if path.exists():
-              tail = path.read_text(encoding='utf-8', errors='replace')[-12000:]
-              message = tail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-              print(f'::error title=CLI check failed::{message}')
+              tail = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', path.read_text(encoding='utf-8', errors='replace'))[-16000:]
+              for offset in range(0, len(tail), 3000):
+                  message = tail[offset:offset + 3000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print(f'::error title=CLI check failed part {offset // 3000 + 1}::{message}')
       - name: Package standalone binary
         shell: bash
         run: python3 scripts/package_cli.py
