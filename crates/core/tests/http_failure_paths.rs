@@ -103,6 +103,15 @@ impl Loopback {
                     }
                     Err(_) => break,
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking fixture connection");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("fixture read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .expect("fixture write timeout");
                 let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
                 let mut request_line = String::new();
                 if reader.read_line(&mut request_line).is_err() {

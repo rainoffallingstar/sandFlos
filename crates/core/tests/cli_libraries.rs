@@ -154,7 +154,7 @@ fn webdav_archive_case_with_password(
     password: &'static str,
 ) {
     use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Write};
     let root = std::env::temp_dir().join(format!("cli-webdav-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
     let db = rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap();
@@ -180,15 +180,30 @@ fn webdav_archive_case_with_password(
                 Err(_) => return,
             }
         };
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(3)))
             .unwrap();
-        let mut request = [0u8; 4096];
-        let len = stream.read(&mut request).unwrap();
-        assert!(String::from_utf8_lossy(&request[..len]).starts_with("GET /zotero/ABCDEFGH.zip "));
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut request = String::new();
+        loop {
+            let mut line = String::new();
+            assert!(
+                reader.read_line(&mut line).unwrap() > 0,
+                "incomplete request"
+            );
+            let complete = line == "\r\n";
+            request.push_str(&line);
+            if complete {
+                break;
+            }
+        }
+        assert!(request.starts_with("GET /zotero/ABCDEFGH.zip "));
         if password == "correct horse battery staple" {
-            assert!(String::from_utf8_lossy(&request[..len])
-                .contains("Basic dXNlcjpjb3JyZWN0IGhvcnNlIGJhdHRlcnkgc3RhcGxl"));
+            assert!(request.contains("Basic dXNlcjpjb3JyZWN0IGhvcnNlIGJhdHRlcnkgc3RhcGxl"));
         }
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         zip.start_file(entry_name, zip::write::SimpleFileOptions::default())

@@ -183,6 +183,17 @@ impl AuthServer {
                     }
                     Err(_) => break,
                 };
+                // Accepted sockets may inherit the listener's nonblocking mode.
+                // Header/body parsing below needs blocking reads on every platform.
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking fixture connection");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("fixture read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .expect("fixture write timeout");
                 let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
                 let mut request_line = String::new();
                 if reader.read_line(&mut request_line).is_err() {
@@ -297,6 +308,15 @@ impl ApiServer {
                     }
                     Err(_) => break,
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking fixture connection");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("fixture read timeout");
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .expect("fixture write timeout");
                 let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
                 let mut request_line = String::new();
                 if reader.read_line(&mut request_line).is_err() {
