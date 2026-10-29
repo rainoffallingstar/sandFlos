@@ -1,6 +1,8 @@
 use crate::models::{DashboardDevice, ShareTransferDevice};
 use crate::util::{json_field_to_string, parse_bool_field, value_to_array};
 use serde_json::Value;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpStream, UdpSocket},
@@ -8,8 +10,6 @@ use std::{
     thread,
     time::Duration,
 };
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 use uuid::Uuid;
 

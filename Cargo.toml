@@ -2,6 +2,11 @@
 members = [
     "crates/core",
     "crates/app",
+    "crates/cli",
+]
+default-members = [
+    "crates/core",
+    "crates/cli",
 ]
 exclude = [
     "src-tauri",

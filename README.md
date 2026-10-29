@@ -91,9 +91,19 @@ cargo test --workspace
 - 本地数据（登录态、Zotero / Calibre 配置）默认位于
   `~/Library/Application Support/com.fallingstar.send2boox/`。
 
-## CLI 改造计划
+## 纯 CLI
 
-纯 CLI 形态的[架构审查与完整 TDD 方案](docs/plans/cli-review-and-tdd.md)已记录，涵盖无浏览器认证、脚本输出契约、业务解耦、测试切片与跨平台验收。当前为方案阶段，CLI 尚未实现。
+无需桌面或浏览器，可独立编译和运行：
+
+```bash
+cargo build --locked --release -p sandflos-cli
+./target/release/sandflos --help
+./target/release/sandflos --json auth status
+```
+
+配置、认证、推送和书库命令见 [CLI 使用说明](docs/cli.md)。退出码与 JSON 输出适合脚本调用；CLI 使用独立配置目录。桌面端继续通过 `-p send2boox-desktop-gpui` 构建。
+
+[架构与 TDD 方案](docs/plans/cli-review-and-tdd.md) · [实施与验收记录](docs/plans/tdd-integration.md)
 
 ## License
 

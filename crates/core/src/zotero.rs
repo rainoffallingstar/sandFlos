@@ -1,9 +1,9 @@
 use crate::api::create_client;
-use crate::push::{clear_upload_transfer_metrics, set_upload_progress_label};
 use crate::models::{
     DashboardSnapshot, ZoteroAttachmentSummary, ZoteroConnectionState, ZoteroConnectionSummary,
     ZoteroDetectionResult, ZoteroItemSummary, ZoteroSaveInput,
 };
+use crate::push::{clear_upload_transfer_metrics, set_upload_progress_label};
 use crate::state::{finish_upload_task, try_begin_upload_task, update_upload_runtime_state};
 use crate::util::{normalize_optional, unix_ms_now};
 use keyring::{Entry, Error as KeyringError};
@@ -182,6 +182,7 @@ fn build_database_path(data_dir: Option<&str>) -> Option<String> {
     })
 }
 
+#[cfg(target_os = "macos")]
 fn default_zotero_root() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(
@@ -194,8 +195,8 @@ fn default_zotero_root() -> Option<PathBuf> {
 
 fn parse_profiles_ini_default_profile(root: &Path) -> Result<PathBuf, String> {
     let path = root.join("profiles.ini");
-    let content = fs::read_to_string(&path)
-        .map_err(|err| format!("读取 profiles.ini 失败: {err}"))?;
+    let content =
+        fs::read_to_string(&path).map_err(|err| format!("读取 profiles.ini 失败: {err}"))?;
     let mut current_path = None::<String>;
     let mut is_relative = true;
     let mut is_default = false;
@@ -297,7 +298,8 @@ fn detect_from_profile_dir(profile_dir: &Path) -> ZoteroDetectionResult {
         }
     };
 
-    let use_data_dir = parse_pref_bool(&prefs_content, "extensions.zotero.useDataDir").unwrap_or(false);
+    let use_data_dir =
+        parse_pref_bool(&prefs_content, "extensions.zotero.useDataDir").unwrap_or(false);
     let data_dir = if use_data_dir {
         normalize_data_dir(parse_pref_value(
             &prefs_content,
@@ -308,7 +310,9 @@ fn detect_from_profile_dir(profile_dir: &Path) -> ZoteroDetectionResult {
     }
     .or_else(|| {
         let fallback = profile_dir.join("zotero.sqlite");
-        fallback.exists().then(|| profile_dir.to_string_lossy().to_string())
+        fallback
+            .exists()
+            .then(|| profile_dir.to_string_lossy().to_string())
     });
 
     let database_path = build_database_path(data_dir.as_deref());
@@ -346,11 +350,8 @@ fn detect_from_profile_dir(profile_dir: &Path) -> ZoteroDetectionResult {
         .webdav_username
         .as_ref()
         .map(|_| "prefs.js".to_string());
-    result.webdav_verified = parse_pref_bool(
-        &prefs_content,
-        "extensions.zotero.sync.storage.verified",
-    )
-    .unwrap_or(false);
+    result.webdav_verified =
+        parse_pref_bool(&prefs_content, "extensions.zotero.sync.storage.verified").unwrap_or(false);
     result.download_mode_personal = normalize_optional(parse_pref_value(
         &prefs_content,
         "extensions.zotero.sync.storage.downloadMode.personal",
@@ -361,13 +362,17 @@ fn detect_from_profile_dir(profile_dir: &Path) -> ZoteroDetectionResult {
     ));
 
     if result.data_dir.is_none() {
-        result.issues.push("未在 prefs.js 中找到可用 dataDir".to_string());
+        result
+            .issues
+            .push("未在 prefs.js 中找到可用 dataDir".to_string());
     }
     if !result.database_exists {
         result.issues.push("zotero.sqlite 不存在".to_string());
     }
     if !result.protocol_is_webdav {
-        result.issues.push("当前附件同步协议不是 WebDAV".to_string());
+        result
+            .issues
+            .push("当前附件同步协议不是 WebDAV".to_string());
     }
 
     result
@@ -423,7 +428,7 @@ fn delete_password(url: &str, username: &str) -> Result<(), String> {
 pub fn detect_config_inner() -> Result<ZoteroDetectionResult, String> {
     #[cfg(not(target_os = "macos"))]
     {
-        return Err("当前版本只支持 macOS 自动检测 Zotero 配置".to_string());
+        Err("当前版本只支持 macOS 自动检测 Zotero 配置".to_string())
     }
     #[cfg(target_os = "macos")]
     {
@@ -458,7 +463,9 @@ fn merge_detection_into_config(config: &mut ZoteroConfigFile, detection: &Zotero
 fn connection_summary_from_config(config: &ZoteroConfigFile) -> ZoteroConnectionSummary {
     let normalized_webdav_url = normalize_webdav_url(config.webdav_url.clone());
     let password_saved = password_saved_for(
-        normalized_webdav_url.as_deref().or(config.webdav_url.as_deref()),
+        normalized_webdav_url
+            .as_deref()
+            .or(config.webdav_url.as_deref()),
         config.webdav_username.as_deref(),
     );
     ZoteroConnectionSummary {
@@ -603,8 +610,7 @@ pub fn save_and_validate_inner(input: ZoteroSaveInput) -> Result<ZoteroConnectio
     let password = if let Some(password) = password_input.as_deref() {
         password.to_string()
     } else {
-        load_saved_password(&url, &username)?
-            .ok_or_else(|| "请先补全 WebDAV 密码".to_string())?
+        load_saved_password(&url, &username)?.ok_or_else(|| "请先补全 WebDAV 密码".to_string())?
     };
 
     if let Err(err) = validate_webdav(&url, &username, &password) {
@@ -649,7 +655,9 @@ pub fn detect_from_selected_path(selected_path: &Path) -> Result<ZoteroDetection
     Ok(detection)
 }
 
-pub fn detect_from_selected_data_dir(selected_path: &Path) -> Result<ZoteroDetectionResult, String> {
+pub fn detect_from_selected_data_dir(
+    selected_path: &Path,
+) -> Result<ZoteroDetectionResult, String> {
     if !selected_path.join("zotero.sqlite").is_file() {
         return Err("所选目录中未找到 zotero.sqlite".to_string());
     }
@@ -688,10 +696,6 @@ pub fn detect_from_selected_data_dir(selected_path: &Path) -> Result<ZoteroDetec
         issues: Vec::new(),
     })
 }
-
-
-
-
 
 fn create_temp_dir(prefix: &str) -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()));
@@ -764,7 +768,11 @@ fn fetch_author_summary(conn: &Connection, item_id: i64) -> Result<Option<String
     } else if authors.len() <= 2 {
         Ok(Some(authors.join("、")))
     } else {
-        Ok(Some(format!("{} 等 {} 位", authors[..2].join("、"), authors.len())))
+        Ok(Some(format!(
+            "{} 等 {} 位",
+            authors[..2].join("、"),
+            authors.len()
+        )))
     }
 }
 
@@ -775,7 +783,11 @@ fn extract_year(value: Option<String>) -> Option<String> {
         .skip_while(|ch| !ch.is_ascii_digit())
         .take(4)
         .collect::<String>();
-    if chars.len() == 4 { Some(chars) } else { None }
+    if chars.len() == 4 {
+        Some(chars)
+    } else {
+        None
+    }
 }
 
 fn resolve_attachment_local_path(
@@ -835,11 +847,8 @@ fn fetch_attachment_records(
     for row in rows {
         let (attachment_item_id, attachment_key, attachment_path, content_type, link_mode) =
             row.map_err(|err| err.to_string())?;
-        let local_path = resolve_attachment_local_path(
-            data_dir,
-            &attachment_key,
-            attachment_path.as_deref(),
-        );
+        let local_path =
+            resolve_attachment_local_path(data_dir, &attachment_key, attachment_path.as_deref());
         let local_exists = local_path
             .as_ref()
             .map(|path| path.is_file())
@@ -882,7 +891,9 @@ fn build_attachment_summary(
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
         can_push_directly: record.link_mode == 0 && record.local_exists,
-        can_download_from_webdav: record.link_mode == 0 && !record.local_exists && can_download_from_webdav,
+        can_download_from_webdav: record.link_mode == 0
+            && !record.local_exists
+            && can_download_from_webdav,
         status_label,
     }
 }
@@ -903,8 +914,8 @@ fn build_zotero_item_summary(
     date_modified: String,
     can_download_from_webdav: bool,
 ) -> Result<Option<ZoteroItemSummary>, String> {
-    let title = fetch_field_value(conn, item_id, "title")
-        .unwrap_or_else(|| "未命名条目".to_string());
+    let title =
+        fetch_field_value(conn, item_id, "title").unwrap_or_else(|| "未命名条目".to_string());
     let author_summary = fetch_author_summary(conn, item_id)?;
     let year = extract_year(fetch_field_value(conn, item_id, "date"));
     let attachments = fetch_attachment_records(conn, data_dir, item_id)?
@@ -938,13 +949,14 @@ fn zotero_item_matches_query(item: &ZoteroItemSummary, query: &str) -> bool {
         haystack.push(attachment.content_type.clone().unwrap_or_default());
         haystack.push(attachment.status_label.clone());
     }
-    haystack
-        .join(" ")
-        .to_lowercase()
-        .contains(query)
+    haystack.join(" ").to_lowercase().contains(query)
 }
 
-pub fn list_recent_items_inner(limit: Option<usize>, offset: Option<usize>, search: Option<String>) -> Result<Vec<ZoteroItemSummary>, String> {
+pub fn list_recent_items_inner(
+    limit: Option<usize>,
+    offset: Option<usize>,
+    search: Option<String>,
+) -> Result<Vec<ZoteroItemSummary>, String> {
     let config = load_zotero_config();
     let data_dir = config
         .data_dir
@@ -958,109 +970,12 @@ pub fn list_recent_items_inner(limit: Option<usize>, offset: Option<usize>, sear
         && config.webdav_url.is_some()
         && config.webdav_username.is_some()
         && has_password;
-    let (temp_dir, conn) = open_copied_database(&data_dir)?;
-    let offset = offset.unwrap_or(0);
-    let search = normalize_optional(search).map(|value| value.to_lowercase());
-    let rows = if search.is_none() && limit.filter(|value| *value > 0).is_some() {
-        let limit = limit.unwrap_or_default();
-        let mut stmt = conn
-            .prepare(
-                "SELECT i.itemID, i.key, i.dateModified
-                 FROM items i
-                 JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
-                 JOIN libraries l ON l.libraryID = i.libraryID
-                 WHERE l.type = 'user'
-                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
-                 ORDER BY i.dateModified DESC
-                 LIMIT ?1 OFFSET ?2",
-            )
-            .map_err(|err| err.to_string())?;
-        let mapped = stmt
-            .query_map(params![limit as i64, offset as i64], map_recent_item_row)
-            .map_err(|err| err.to_string())?;
-        let mut rows = Vec::new();
-        for row in mapped {
-            rows.push(row.map_err(|err| err.to_string())?);
-        }
-        rows
-    } else if search.is_none() && offset > 0 {
-        let mut stmt = conn
-            .prepare(
-                "SELECT i.itemID, i.key, i.dateModified
-                 FROM items i
-                 JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
-                 JOIN libraries l ON l.libraryID = i.libraryID
-                 WHERE l.type = 'user'
-                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
-                 ORDER BY i.dateModified DESC
-                 LIMIT -1 OFFSET ?1",
-            )
-            .map_err(|err| err.to_string())?;
-        let mapped = stmt
-            .query_map(params![offset as i64], map_recent_item_row)
-            .map_err(|err| err.to_string())?;
-        let mut rows = Vec::new();
-        for row in mapped {
-            rows.push(row.map_err(|err| err.to_string())?);
-        }
-        rows
-    } else {
-        let mut stmt = conn
-            .prepare(
-                "SELECT i.itemID, i.key, i.dateModified
-                 FROM items i
-                 JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
-                 JOIN libraries l ON l.libraryID = i.libraryID
-                 WHERE l.type = 'user'
-                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
-                 ORDER BY i.dateModified DESC",
-            )
-            .map_err(|err| err.to_string())?;
-        let mapped = stmt
-            .query_map([], map_recent_item_row)
-            .map_err(|err| err.to_string())?;
-        let mut rows = Vec::new();
-        for row in mapped {
-            rows.push(row.map_err(|err| err.to_string())?);
-        }
-        rows
-    };
-    let mut items = Vec::new();
-    let page_limit = limit.filter(|value| *value > 0);
-    let mut matched = 0_usize;
-    for row in rows {
-        let (item_id, item_key, date_modified) = row;
-        let Some(item) = build_zotero_item_summary(
-            &conn,
-            &data_dir,
-            item_id,
-            item_key,
-            date_modified,
-            can_download_from_webdav,
-        )? else {
-            continue;
-        };
-        if let Some(query) = search.as_deref() {
-            if !zotero_item_matches_query(&item, query) {
-                continue;
-            }
-            if matched < offset {
-                matched += 1;
-                continue;
-            }
-        }
-        items.push(item);
-        if let Some(limit) = page_limit {
-            if items.len() >= limit {
-                break;
-            }
-        }
-    }
-    let _ = fs::remove_dir_all(temp_dir);
-    Ok(items)
+    list_items_at(&data_dir, limit, offset, search, can_download_from_webdav)
 }
 
-pub fn fetch_attachment_record_by_id(attachment_item_id: i64) -> Result<(ZoteroConfigFile, AttachmentRecord), String> {
+pub fn fetch_attachment_record_by_id(
+    attachment_item_id: i64,
+) -> Result<(ZoteroConfigFile, AttachmentRecord), String> {
     let config = load_zotero_config();
     let data_dir = config
         .data_dir
@@ -1155,7 +1070,8 @@ fn download_remote_attachment(
         let out_path = temp_dir.join(entry_name);
         let mut out_file = fs::File::create(&out_path).map_err(|err| err.to_string())?;
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(|err| err.to_string())?;
+        file.read_to_end(&mut buffer)
+            .map_err(|err| err.to_string())?;
         out_file.write_all(&buffer).map_err(|err| err.to_string())?;
         return Ok(AttachmentResolution {
             local_path: out_path,
@@ -1190,8 +1106,8 @@ fn resolve_attachment_for_push(
         .webdav_username
         .clone()
         .ok_or_else(|| "缺少 WebDAV 用户名".to_string())?;
-    let password =
-        load_saved_password(&url, &username)?.ok_or_else(|| "缺少已保存的 WebDAV 密码".to_string())?;
+    let password = load_saved_password(&url, &username)?
+        .ok_or_else(|| "缺少已保存的 WebDAV 密码".to_string())?;
     let client = create_client(90)?;
     download_remote_attachment(
         &client,
@@ -1219,7 +1135,6 @@ fn record_upload_failure(message: &str) {
     });
 }
 
-
 pub fn zotero_status() -> Result<ZoteroConnectionState, String> {
     Ok(build_connection_state(&load_zotero_config()))
 }
@@ -1230,28 +1145,140 @@ pub fn zotero_push_attachment(attachment_item_id: i64) -> Result<DashboardSnapsh
     }
 
     set_upload_progress_label("上传进度: 正在检查 Zotero 附件...");
-    let prepared = match fetch_attachment_record_by_id(attachment_item_id)
-        .and_then(|(config, record)| {
+    let prepared =
+        match fetch_attachment_record_by_id(attachment_item_id).and_then(|(config, record)| {
             if !record.local_exists {
                 set_upload_progress_label("上传进度: 正在从 WebDAV 拉取 Zotero 附件...");
             }
             resolve_attachment_for_push(&config, &record)
         }) {
-        Ok(value) => value,
-        Err(err) => {
-            record_upload_failure(&err);
-            return Err(err);
-        }
-    };
+            Ok(value) => value,
+            Err(err) => {
+                record_upload_failure(&err);
+                return Err(err);
+            }
+        };
 
-    let upload_result = crate::push::upload_items_blocking_with_active_task(
-        vec![crate::push::UploadItem {
+    let upload_result =
+        crate::push::upload_items_blocking_with_active_task(vec![crate::push::UploadItem {
             path: prepared.local_path.clone(),
             display_name: None,
-        }],
-    );
+        }]);
     cleanup_resolution(&prepared);
     upload_result
+}
+
+pub(crate) fn list_items_at(
+    data_dir: &str,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    search: Option<String>,
+    can_download_from_webdav: bool,
+) -> Result<Vec<ZoteroItemSummary>, String> {
+    let conn = Connection::open_with_flags(
+        Path::new(data_dir).join("zotero.sqlite"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|_| "cannot open Zotero database")?;
+    let offset = offset.unwrap_or(0);
+    let search = normalize_optional(search).map(|value| value.to_lowercase());
+    let rows = if search.is_none() && limit.filter(|value| *value > 0).is_some() {
+        let limit = limit.unwrap_or_default();
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.itemID, i.key, i.dateModified
+                 FROM items i
+                 JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+                 JOIN libraries l ON l.libraryID = i.libraryID
+                 WHERE l.type = 'user'
+                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+                 ORDER BY i.dateModified DESC
+                 LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(|err| err.to_string())?;
+        let mapped = stmt
+            .query_map(params![limit as i64, offset as i64], map_recent_item_row)
+            .map_err(|err| err.to_string())?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(|err| err.to_string())?);
+        }
+        rows
+    } else if search.is_none() && offset > 0 {
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.itemID, i.key, i.dateModified
+                 FROM items i
+                 JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+                 JOIN libraries l ON l.libraryID = i.libraryID
+                 WHERE l.type = 'user'
+                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+                 ORDER BY i.dateModified DESC
+                 LIMIT -1 OFFSET ?1",
+            )
+            .map_err(|err| err.to_string())?;
+        let mapped = stmt
+            .query_map(params![offset as i64], map_recent_item_row)
+            .map_err(|err| err.to_string())?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(|err| err.to_string())?);
+        }
+        rows
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT i.itemID, i.key, i.dateModified
+                 FROM items i
+                 JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+                 JOIN libraries l ON l.libraryID = i.libraryID
+                 WHERE l.type = 'user'
+                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+                 ORDER BY i.dateModified DESC",
+            )
+            .map_err(|err| err.to_string())?;
+        let mapped = stmt
+            .query_map([], map_recent_item_row)
+            .map_err(|err| err.to_string())?;
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(|err| err.to_string())?);
+        }
+        rows
+    };
+    let mut items = Vec::new();
+    let page_limit = limit.filter(|value| *value > 0);
+    let mut matched = 0_usize;
+    for row in rows {
+        let (item_id, item_key, date_modified) = row;
+        let Some(item) = build_zotero_item_summary(
+            &conn,
+            data_dir,
+            item_id,
+            item_key,
+            date_modified,
+            can_download_from_webdav,
+        )?
+        else {
+            continue;
+        };
+        if let Some(query) = search.as_deref() {
+            if !zotero_item_matches_query(&item, query) {
+                continue;
+            }
+            if matched < offset {
+                matched += 1;
+                continue;
+            }
+        }
+        items.push(item);
+        if let Some(limit) = page_limit {
+            if items.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(items)
 }
 
 #[cfg(test)]
@@ -1351,12 +1378,9 @@ user_pref("extensions.zotero.sync.storage.username", "demo");
 
     #[test]
     fn resolve_attachment_local_path_maps_storage_prefix() {
-        let path = resolve_attachment_local_path(
-            "/tmp/zotero",
-            "ABC123",
-            Some("storage:demo/file.pdf"),
-        )
-        .unwrap();
+        let path =
+            resolve_attachment_local_path("/tmp/zotero", "ABC123", Some("storage:demo/file.pdf"))
+                .unwrap();
         assert_eq!(
             path,
             PathBuf::from("/tmp/zotero/storage/ABC123/demo/file.pdf")
@@ -1383,11 +1407,19 @@ user_pref("extensions.zotero.sync.storage.username", "demo");
         )
         .unwrap();
         conn.execute("INSERT INTO libraries (libraryID, type, editable, filesEditable, version, storageVersion, lastSync, archived) VALUES (1, 'user', 1, 1, 0, 0, 0, 0)", []).unwrap();
-        conn.execute("INSERT INTO itemTypes (itemTypeID, typeName) VALUES (3, 'attachment'), (7, 'book')", []).unwrap();
+        conn.execute(
+            "INSERT INTO itemTypes (itemTypeID, typeName) VALUES (3, 'attachment'), (7, 'book')",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO items (itemID, itemTypeID, dateAdded, dateModified, clientDateModified, libraryID, key, version, synced) VALUES (1, 7, '2024-01-01', '2024-01-02', '2024-01-02', 1, 'BOOK1', 0, 0), (2, 3, '2024-01-01', '2024-01-02', '2024-01-02', 1, 'ATT1', 0, 0)", []).unwrap();
         conn.execute("INSERT INTO fields (fieldID, fieldName, fieldFormatID) VALUES (1, 'title', 0), (2, 'date', 0)", []).unwrap();
         conn.execute("INSERT INTO itemDataValues (valueID, value) VALUES (1, 'Test Book'), (2, '2024-03-01')", []).unwrap();
-        conn.execute("INSERT INTO itemData (itemID, fieldID, valueID) VALUES (1, 1, 1), (1, 2, 2)", []).unwrap();
+        conn.execute(
+            "INSERT INTO itemData (itemID, fieldID, valueID) VALUES (1, 1, 1), (1, 2, 2)",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO creators (creatorID, firstName, lastName, fieldMode) VALUES (1, 'Ada', 'Lovelace', 0)", []).unwrap();
         conn.execute("INSERT INTO itemCreators (itemID, creatorID, creatorTypeID, orderIndex) VALUES (1, 1, 1, 0)", []).unwrap();
         conn.execute("INSERT INTO itemAttachments (itemID, parentItemID, linkMode, contentType, charsetID, path, syncState, storageModTime, storageHash, lastProcessedModificationTime) VALUES (2, 1, 0, 'application/pdf', 0, 'storage:test.pdf', 0, 0, '', 0)", []).unwrap();

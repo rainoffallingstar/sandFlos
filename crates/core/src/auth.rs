@@ -21,7 +21,10 @@ const WECHAT_LOGIN_REDIRECT_URI: &str = "https://send2boox.com/api/1/passport/we
 const WECHAT_LOGIN_SOCKET_URL: &str = "wss://send2boox.com/ws/socketio/";
 const WECHAT_LOGIN_STATE_PREFIX: &str = "bind_login_";
 
-pub fn start_login_flow<F>(open_url: F) -> Result<(), String> where F: Fn(&str) -> Result<(), String> + Send + Sync + 'static {
+pub fn start_login_flow<F>(open_url: F) -> Result<(), String>
+where
+    F: Fn(&str) -> Result<(), String> + Send + Sync + 'static,
+{
     let login_nonce = Uuid::new_v4().to_string();
     let state = build_wechat_login_state(&login_nonce);
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|err| err.to_string())?;
@@ -216,7 +219,7 @@ fn handle_connection(mut stream: TcpStream, expected_state: &str) {
         }
         "/auth/callback" => {
             clear_login_portal();
-            
+
             write_response(
                 &mut stream,
                 "200 OK",

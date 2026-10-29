@@ -1,9 +1,9 @@
-use crate::push::{clear_upload_transfer_metrics, set_upload_progress_label};
 use crate::models::{
     CalibreBookSummary, CalibreConnectionState, CalibreConnectionSummary, CalibreFormatSummary,
     CalibreSaveInput, DashboardSnapshot,
 };
 use crate::push::UploadItem;
+use crate::push::{clear_upload_transfer_metrics, set_upload_progress_label};
 use crate::state::{finish_upload_task, try_begin_upload_task, update_upload_runtime_state};
 use crate::util::{normalize_optional, unix_ms_now};
 use rusqlite::{params, Connection, OpenFlags};
@@ -124,10 +124,10 @@ fn build_database_paths(library_dirs: &[String]) -> Vec<String> {
     library_dirs
         .iter()
         .map(|dir| {
-        PathBuf::from(dir)
-            .join("metadata.db")
-            .to_string_lossy()
-            .to_string()
+            PathBuf::from(dir)
+                .join("metadata.db")
+                .to_string_lossy()
+                .to_string()
         })
         .collect()
 }
@@ -195,7 +195,10 @@ fn validate_library_dir(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn set_library_dirs_config(library_dirs: Vec<String>, detected_at_ms: Option<u128>) -> Result<CalibreConnectionState, String> {
+pub fn set_library_dirs_config(
+    library_dirs: Vec<String>,
+    detected_at_ms: Option<u128>,
+) -> Result<CalibreConnectionState, String> {
     let normalized_dirs = normalize_library_dirs(&library_dirs);
     if normalized_dirs.is_empty() {
         let mut config = load_calibre_config();
@@ -238,7 +241,8 @@ pub fn detect_library_inner() -> Result<CalibreConnectionState, String> {
         save_calibre_config(&config)?;
         return Err("未在默认位置找到 Calibre Library，请手动选择书库目录。".to_string());
     }
-    set_library_dirs_config(detected
+    set_library_dirs_config(
+        detected
             .iter()
             .map(|path| path.to_string_lossy().to_string())
             .collect(),
@@ -250,22 +254,20 @@ pub fn refresh_libraries_inner() -> Result<CalibreConnectionState, String> {
     let mut config = load_calibre_config();
     let summary = connection_summary_from_config(&config);
     config.validated_at_ms = Some(unix_ms_now());
-    config.last_error = if summary.total_library_count == 0 {
-        None
-    } else if summary.ready_library_count == summary.total_library_count {
+    config.last_error = if summary.total_library_count == 0
+        || summary.ready_library_count == summary.total_library_count
+    {
         None
     } else {
         let ready = summary.ready_library_count;
         let total = summary.total_library_count;
-        Some(format!("书库检查完成: {ready}/{total} 个可用，其余目录需要修复或重新挂载。"))
+        Some(format!(
+            "书库检查完成: {ready}/{total} 个可用，其余目录需要修复或重新挂载。"
+        ))
     };
     save_calibre_config(&config)?;
     Ok(build_connection_state(&config))
 }
-
-
-
-
 
 fn create_temp_dir(prefix: &str) -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()));
@@ -293,7 +295,11 @@ fn extract_year(value: Option<String>) -> Option<String> {
         .skip_while(|ch| !ch.is_ascii_digit())
         .take(4)
         .collect::<String>();
-    if year.len() == 4 { Some(year) } else { None }
+    if year.len() == 4 {
+        Some(year)
+    } else {
+        None
+    }
 }
 
 fn author_summary(value: Option<String>) -> Option<String> {
@@ -357,7 +363,10 @@ fn build_format_summary(
     local_path: Option<PathBuf>,
     size_hint: Option<u64>,
 ) -> CalibreFormatSummary {
-    let local_exists = local_path.as_ref().map(|path| path.is_file()).unwrap_or(false);
+    let local_exists = local_path
+        .as_ref()
+        .map(|path| path.is_file())
+        .unwrap_or(false);
     let file_size = local_path
         .as_ref()
         .and_then(|path| fs::metadata(path).ok().map(|meta| meta.len()))
@@ -425,16 +434,16 @@ fn fetch_format_records(
     Ok(formats)
 }
 
-fn map_recent_book_row(
-    row: &rusqlite::Row<'_>,
-) -> rusqlite::Result<(
+type RecentBookRow = (
     i64,
     Option<String>,
     Option<String>,
     String,
     Option<String>,
     Option<String>,
-)> {
+);
+
+fn map_recent_book_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RecentBookRow> {
     Ok((
         row.get::<_, i64>(0)?,
         row.get::<_, Option<String>>(1)?,
@@ -459,17 +468,18 @@ fn calibre_book_matches_query(book: &CalibreBookSummary, query: &str) -> bool {
         haystack.push(format.file_name.clone().unwrap_or_default());
         haystack.push(format.status_label.clone());
     }
-    haystack
-        .join(" ")
-        .to_lowercase()
-        .contains(query)
+    haystack.join(" ").to_lowercase().contains(query)
 }
 
-fn list_recent_books_from_library(
+pub(crate) fn list_books_at(
     library_dir: &str,
     limit: Option<usize>,
 ) -> Result<Vec<CalibreBookSummary>, String> {
-    let (temp_dir, conn) = open_copied_database(library_dir)?;
+    let conn = Connection::open_with_flags(
+        Path::new(library_dir).join("metadata.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|_| "cannot open Calibre database")?;
     let rows = if let Some(limit) = limit.filter(|value| *value > 0) {
         let mut stmt = conn
             .prepare(
@@ -507,8 +517,7 @@ fn list_recent_books_from_library(
     let mut books = Vec::new();
     for row in rows {
         let (book_id, title, author_sort, relative_book_path, last_modified, pubdate) = row;
-        let formats =
-            fetch_format_records(&conn, &library_dir, book_id, &relative_book_path)?;
+        let formats = fetch_format_records(&conn, library_dir, book_id, &relative_book_path)?;
         if formats.is_empty() {
             continue;
         }
@@ -523,11 +532,21 @@ fn list_recent_books_from_library(
             formats,
         });
     }
-    let _ = fs::remove_dir_all(temp_dir);
     Ok(books)
 }
 
-pub fn list_recent_books_inner(limit: Option<usize>, offset: Option<usize>, search: Option<String>) -> Result<Vec<CalibreBookSummary>, String> {
+fn list_recent_books_from_library(
+    library_dir: &str,
+    limit: Option<usize>,
+) -> Result<Vec<CalibreBookSummary>, String> {
+    list_books_at(library_dir, limit)
+}
+
+pub fn list_recent_books_inner(
+    limit: Option<usize>,
+    offset: Option<usize>,
+    search: Option<String>,
+) -> Result<Vec<CalibreBookSummary>, String> {
     let config = load_calibre_config();
     let library_dirs = ready_library_dirs(&config);
     if library_dirs.is_empty() {
@@ -540,19 +559,19 @@ pub fn list_recent_books_inner(limit: Option<usize>, offset: Option<usize>, sear
         None
     } else {
         limit
-        .filter(|value| *value > 0)
-        .map(|value| offset.saturating_add(value).max(10))
+            .filter(|value| *value > 0)
+            .map(|value| offset.saturating_add(value).max(10))
     };
     let per_library_limit = fetch_limit;
     for library_dir in library_dirs {
-        books.extend(list_recent_books_from_library(&library_dir, per_library_limit)?);
+        books.extend(list_recent_books_from_library(
+            &library_dir,
+            per_library_limit,
+        )?);
     }
     books.sort_by(|a, b| b.date_modified.cmp(&a.date_modified));
     if let Some(query) = search.as_deref() {
-        books = books
-            .into_iter()
-            .filter(|book| calibre_book_matches_query(book, query))
-            .collect();
+        books.retain(|book| calibre_book_matches_query(book, query));
     }
     if offset > 0 {
         books = books.into_iter().skip(offset).collect();
@@ -620,7 +639,10 @@ fn fetch_format_record_by_id(
                 Ok(CalibreFormatRecord {
                     title,
                     format,
-                    local_exists: local_path.as_ref().map(|path| path.is_file()).unwrap_or(false),
+                    local_exists: local_path
+                        .as_ref()
+                        .map(|path| path.is_file())
+                        .unwrap_or(false),
                     local_path,
                 })
             },
@@ -638,7 +660,11 @@ fn resolve_upload_item_for_format(record: &CalibreFormatRecord) -> Result<Upload
         return Err("Calibre 书籍文件不存在".to_string());
     }
     Ok(UploadItem {
-        display_name: Some(build_display_name(&record.title, &local_path, &record.format)),
+        display_name: Some(build_display_name(
+            &record.title,
+            &local_path,
+            &record.format,
+        )),
         path: local_path,
     })
 }
@@ -652,7 +678,6 @@ fn record_upload_failure(message: &str) {
         state.last_error = Some(message.clone());
     });
 }
-
 
 pub fn calibre_status() -> Result<CalibreConnectionState, String> {
     Ok(build_connection_state(&load_calibre_config()))
@@ -693,7 +718,10 @@ mod tests {
 
     #[test]
     fn sanitize_file_stem_replaces_invalid_chars() {
-        assert_eq!(sanitize_file_stem("三体: 黑暗森林/全集"), "三体 黑暗森林 全集");
+        assert_eq!(
+            sanitize_file_stem("三体: 黑暗森林/全集"),
+            "三体 黑暗森林 全集"
+        );
     }
 
     #[test]
@@ -756,7 +784,8 @@ mod tests {
         )
         .unwrap();
 
-        let books = list_recent_books_from_library(&library_dir.to_string_lossy(), Some(10)).unwrap();
+        let books =
+            list_recent_books_from_library(&library_dir.to_string_lossy(), Some(10)).unwrap();
         assert_eq!(books.len(), 1);
         assert_eq!(books[0].title, "三体");
         assert_eq!(books[0].formats[0].data_id, 7);

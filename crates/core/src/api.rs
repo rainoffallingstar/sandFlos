@@ -24,6 +24,11 @@ pub fn create_client(timeout_secs: u64) -> Result<Client, String> {
         .map_err(|err| err.to_string())
 }
 
+pub fn create_client_with_base_url(timeout_secs: u64, base_url: &str) -> Result<Client, String> {
+    let _ = Url::parse(base_url).map_err(|err| err.to_string())?;
+    create_client(timeout_secs)
+}
+
 fn with_optional_token(request: RequestBuilder, token: Option<&str>) -> RequestBuilder {
     match token.filter(|value| !value.trim().is_empty()) {
         Some(token) => request.header(AUTHORIZATION, format!("Bearer {token}")),
@@ -87,8 +92,12 @@ pub fn api_post_value(
 }
 
 pub fn create_qr_login(client: &Client) -> Result<QrCreateResponse, String> {
+    create_qr_login_at(client, BASE_URL)
+}
+
+pub fn create_qr_login_at(client: &Client, base_url: &str) -> Result<QrCreateResponse, String> {
     let response = client
-        .post(format!("{BASE_URL}/api/1/auth/qrcode/create"))
+        .post(format!("{base_url}/api/1/auth/qrcode/create"))
         .header(CONTENT_TYPE, "application/json")
         .body(json!({ "clientType": "web" }).to_string())
         .send()
@@ -130,9 +139,17 @@ fn parse_qr_create_response(data: Value) -> Result<QrCreateResponse, String> {
 }
 
 pub fn check_qr_login(client: &Client, qrcode_id: &str) -> Result<QrCheckResponse, String> {
+    check_qr_login_at(client, BASE_URL, qrcode_id)
+}
+
+pub fn check_qr_login_at(
+    client: &Client,
+    base_url: &str,
+    qrcode_id: &str,
+) -> Result<QrCheckResponse, String> {
     let normalized_qrcode_id = normalize_qr_check_id(qrcode_id);
     let response = client
-        .get(format!("{BASE_URL}/api/1/auth/qrcode/check"))
+        .get(format!("{base_url}/api/1/auth/qrcode/check"))
         .query(&[("clientType", "web"), ("qrcodeId", normalized_qrcode_id)])
         .send()
         .map_err(|err| err.to_string())?;
@@ -210,11 +227,24 @@ pub fn auth_source_text(auth: &UploadAuthContext) -> String {
 
 pub fn fetch_auth_context_and_user(client: &Client) -> Result<(UploadAuthContext, Value), String> {
     let auth = get_auth_state();
-    let token = normalize_optional(auth.token).ok_or_else(|| "当前未登录".to_string())?;
-    let user = fetch_user_me(client, &token)?;
+    let value = normalize_optional(auth.token).ok_or_else(|| "当前未登录".to_string())?;
+    fetch_auth_context_for_token(client, &value)
+}
+
+/// Resolve the account and storage context for an already authenticated credential.
+///
+/// CLI adapters use this entry point so `auth import` and `SANDFLOS_TOKEN` are
+/// honoured without consulting the desktop process's global auth cache.
+pub fn fetch_auth_context_for_token(
+    client: &Client,
+    value: &str,
+) -> Result<(UploadAuthContext, Value), String> {
+    let value = normalize_optional(Some(value.to_string()))
+        .ok_or_else(|| "认证凭据不能为空".to_string())?;
+    let user = fetch_user_me(client, &value)?;
     let uid = json_field_to_string(&user, "uid").ok_or_else(|| "登录信息缺少 uid".to_string())?;
 
-    let storage = fetch_storage(client, &token).unwrap_or(Value::Null);
+    let storage = fetch_storage(client, &value).unwrap_or(Value::Null);
     let storage_limit = parse_u64_field(&storage, "totalSize")
         .or_else(|| parse_u64_field(&storage, "storageLimit"))
         .or_else(|| parse_u64_field(&user, "storage_limit"));
@@ -224,7 +254,7 @@ pub fn fetch_auth_context_and_user(client: &Client) -> Result<(UploadAuthContext
 
     Ok((
         UploadAuthContext {
-            bearer: token,
+            bearer: value,
             uid,
             storage_limit,
             storage_used,
@@ -234,7 +264,11 @@ pub fn fetch_auth_context_and_user(client: &Client) -> Result<(UploadAuthContext
 }
 
 pub fn fetch_user_me(client: &Client, token: &str) -> Result<Value, String> {
-    api_get_value(client, &format!("{BASE_URL}/api/1/users/me"), Some(token))
+    fetch_user_me_at(client, BASE_URL, token)
+}
+
+pub fn fetch_user_me_at(client: &Client, base_url: &str, token: &str) -> Result<Value, String> {
+    api_get_value(client, &format!("{base_url}/api/1/users/me"), Some(token))
 }
 
 pub fn fetch_storage(client: &Client, token: &str) -> Result<Value, String> {
@@ -478,7 +512,7 @@ pub fn fetch_push_queue_for_dashboard(
             items.push(item);
         }
     }
-    items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    items.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
     items.truncate(PUSH_QUEUE_LIMIT);
     Ok(items)
 }

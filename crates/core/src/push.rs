@@ -7,8 +7,8 @@ use crate::dashboard::build_dashboard_snapshot;
 use crate::device::{is_local_transfer_host, normalize_transfer_host_url};
 use crate::models::{BucketConfig, DashboardSnapshot, OssSts, UploadAuthContext};
 use crate::state::{
-    finish_upload_task, set_dashboard_cache,
-    update_dashboard_cache_after_delete, update_upload_runtime_state,
+    finish_upload_task, set_dashboard_cache, update_dashboard_cache_after_delete,
+    update_upload_runtime_state,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Utc};
@@ -58,7 +58,6 @@ impl PreparedUploadFile {
             .and_then(|name| name.to_str())
             .ok_or_else(|| format!("{}: 文件名解析失败", self.upload_path.to_string_lossy()))
     }
-
 }
 
 fn prepare_upload_file(path: &Path) -> Result<PreparedUploadFile, String> {
@@ -110,14 +109,14 @@ fn validate_storage_quota_for_size(
     Ok(())
 }
 
-fn content_type_for(path: &Path) -> String {
+pub(crate) fn content_type_for(path: &Path) -> String {
     mime_guess::from_path(path)
         .first_or_octet_stream()
         .essence_str()
         .to_string()
 }
 
-fn build_oss_host(bucket: &BucketConfig) -> Result<(String, String), String> {
+pub(crate) fn build_oss_host(bucket: &BucketConfig) -> Result<(String, String), String> {
     let bucket_name = bucket
         .bucket
         .clone()
@@ -136,7 +135,7 @@ fn build_oss_host(bucket: &BucketConfig) -> Result<(String, String), String> {
     Ok((bucket_name.clone(), format!("{bucket_name}.{normalized}")))
 }
 
-fn sign_oss(secret: &str, string_to_sign: &str) -> Result<String, String> {
+pub(crate) fn sign_oss(secret: &str, string_to_sign: &str) -> Result<String, String> {
     let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes()).map_err(|err| err.to_string())?;
     mac.update(string_to_sign.as_bytes());
     Ok(BASE64_STANDARD.encode(mac.finalize().into_bytes()))
@@ -248,7 +247,7 @@ fn signed_download_url(
         .as_secs()
         + 10_000;
     let response_disposition = "attachment";
-    let mut subresources = vec![
+    let mut subresources = [
         (
             "response-content-disposition",
             response_disposition.to_string(),
@@ -262,11 +261,13 @@ fn signed_download_url(
         .collect::<Vec<_>>()
         .join("&");
     let canonical_resource = format!("/{bucket_name}/{object_key}?{canonical_subresources}");
-    let string_to_sign = format!("GET
+    let string_to_sign = format!(
+        "GET
 
 
 {expires}
-{canonical_resource}");
+{canonical_resource}"
+    );
     let signature = sign_oss(&sts.access_key_secret, &string_to_sign)?;
     let signed_query = [
         ("OSSAccessKeyId", sts.access_key_id.clone()),
@@ -325,7 +326,7 @@ fn sts_remaining_seconds(sts: &OssSts) -> Option<i64> {
     Some(expiration.timestamp() - Utc::now().timestamp())
 }
 
-fn build_verified_signed_download_url(
+pub(crate) fn build_verified_signed_download_url(
     client: &Client,
     auth: &UploadAuthContext,
     bucket: &BucketConfig,
@@ -362,7 +363,7 @@ fn build_verified_signed_download_url(
     Err(last_err.unwrap_or_else(|| "生成可用的签名下载链接失败".to_string()))
 }
 
-fn wait_for_remote_push_doc_ready(
+pub(crate) fn wait_for_remote_push_doc_ready(
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
@@ -473,6 +474,7 @@ pub fn set_upload_progress_label(text: &str) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upload_single_file_with_metrics(
     client: &Client,
     bucket: &BucketConfig,
@@ -508,9 +510,7 @@ fn upload_single_file_with_metrics(
     )
 }
 
-pub fn perform_native_uploads(
-    files: &[UploadItem],
-) -> Result<UploadExecutionSummary, String> {
+pub fn perform_native_uploads(files: &[UploadItem]) -> Result<UploadExecutionSummary, String> {
     if files.is_empty() {
         return Err("未选择任何文件".to_string());
     }
@@ -666,8 +666,10 @@ pub fn finalize_upload_result(
                 .take(2)
                 .cloned()
                 .collect::<Vec<_>>()
-                .join("
-");
+                .join(
+                    "
+",
+                );
             let details_for_state = details.clone();
             update_upload_runtime_state(move |state| {
                 state.last_error = Some(details_for_state.clone());
@@ -680,9 +682,10 @@ pub fn finalize_upload_result(
         }
         Ok(summary) => {
             if summary.failed > 0 {
-                set_upload_progress_label(
-                    &format!("上传进度: 成功{} 失败{}", summary.success, summary.failed),
-                );
+                set_upload_progress_label(&format!(
+                    "上传进度: 成功{} 失败{}",
+                    summary.success, summary.failed
+                ));
                 let details = summary
                     .errors
                     .iter()
@@ -690,8 +693,10 @@ pub fn finalize_upload_result(
                     .take(2)
                     .cloned()
                     .collect::<Vec<_>>()
-                    .join("
-");
+                    .join(
+                        "
+",
+                    );
                 let details_for_state = details.clone();
                 update_upload_runtime_state(move |state| {
                     state.last_error = Some(details_for_state.clone());
@@ -739,17 +744,26 @@ pub fn upload_items_blocking_with_active_task(
 }
 
 pub fn dashboard_push_resend_inner(id: &str) -> Result<(), String> {
+    let client = create_client(60)?;
+    let (auth, _) = fetch_auth_context_and_user(&client)?;
+    push_resend_with_auth(&client, &auth, id)
+}
+
+/// Re-submit an existing push record using an explicitly resolved credential.
+pub fn push_resend_with_auth(
+    client: &Client,
+    auth: &UploadAuthContext,
+    id: &str,
+) -> Result<(), String> {
     if id.trim().is_empty() {
         return Err("重推记录 id 不能为空".to_string());
     }
 
-    let client = create_client(60)?;
-    let (auth, _) = fetch_auth_context_and_user(&client)?;
-    let (_bucket_key, bucket) = fetch_default_bucket(&client)?;
+    let (_bucket_key, bucket) = fetch_default_bucket(client)?;
 
     let mut last_err = None;
     for attempt in 0..4 {
-        let mut raw_doc = match fetch_push_doc_value(&client, &auth, id) {
+        let mut raw_doc = match fetch_push_doc_value(client, auth, id) {
             Ok(doc) => doc,
             Err(err) => {
                 last_err = Some(err);
@@ -766,7 +780,7 @@ pub fn dashboard_push_resend_inner(id: &str) -> Result<(), String> {
         };
 
         let signed_url =
-            match build_verified_signed_download_url(&client, &auth, &bucket, &object_key) {
+            match build_verified_signed_download_url(client, auth, &bucket, &object_key) {
                 Ok(url) => url,
                 Err(err) => {
                     last_err = Some(err);
@@ -778,29 +792,38 @@ pub fn dashboard_push_resend_inner(id: &str) -> Result<(), String> {
             };
 
         let now_ms = crate::util::unix_ms_now() as u64;
-        if let Err(err) = update_push_doc_for_resend_at(&mut raw_doc, &signed_url, now_ms) {
-            return Err(err);
-        }
+        update_push_doc_for_resend_at(&mut raw_doc, &signed_url, now_ms)?;
 
-        let push_result = if let Some(_parent_id) =
-            raw_doc.get("parent").and_then(Value::as_str).filter(|v| !v.trim().is_empty())
+        let push_result = if let Some(_parent_id) = raw_doc
+            .get("parent")
+            .and_then(Value::as_str)
+            .filter(|v| !v.trim().is_empty())
         {
-            let put_result = put_existing_push_message_doc(&client, &auth, &raw_doc);
+            let put_result = put_existing_push_message_doc(client, auth, &raw_doc);
             if let Ok((_id, rev)) = &put_result {
-                let _ = wait_for_remote_push_doc_ready(&client, &auth, id, rev);
+                let _ = wait_for_remote_push_doc_ready(client, auth, id, rev);
             }
             put_result.map(|_| ()).or_else(|err| {
                 if is_not_found_push_error(&err) {
                     let file_size = raw_doc.get("size").and_then(Value::as_u64).unwrap_or(0);
                     let resource_type = "pdf";
                     let file_name = raw_doc.get("name").and_then(Value::as_str).unwrap_or(id);
-                    put_push_message_doc(&client, &auth, file_name, file_size, resource_type, &object_key, &signed_url).map(|_| ())
+                    put_push_message_doc(
+                        client,
+                        auth,
+                        file_name,
+                        file_size,
+                        resource_type,
+                        &object_key,
+                        &signed_url,
+                    )
+                    .map(|_| ())
                 } else {
                     Err(err)
                 }
             })
         } else {
-            put_existing_push_message_doc(&client, &auth, &raw_doc).map(|_| ())
+            put_existing_push_message_doc(client, auth, &raw_doc).map(|_| ())
         };
 
         match push_result {

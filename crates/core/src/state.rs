@@ -121,7 +121,10 @@ impl RuntimeState {
         }
     }
 
-    pub fn update_dashboard_cached_after_delete(&self, deleted_id: &str) -> Option<DashboardSnapshot> {
+    pub fn update_dashboard_cached_after_delete(
+        &self,
+        deleted_id: &str,
+    ) -> Option<DashboardSnapshot> {
         match self.dashboard_cache.lock() {
             Ok(mut cache) => {
                 let snapshot = cache.as_mut()?;

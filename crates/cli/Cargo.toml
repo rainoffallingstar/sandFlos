@@ -1,0 +1,17 @@
+[package]
+name = "sandflos-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line interface for sandFlos"
+license = "UNLICENSED"
+
+[[bin]]
+name = "sandflos"
+path = "src/main.rs"
+
+[dependencies]
+boox-core = { path = "../core" }
+qrcodegen = "1.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+url = "2.5"

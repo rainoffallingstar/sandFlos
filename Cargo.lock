@@ -5860,6 +5860,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandflos-cli"
+version = "0.1.0"
+dependencies = [
+ "boox-core",
+ "qrcodegen",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"

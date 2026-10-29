@@ -1,0 +1,55 @@
+name: CLI
+on:
+  push:
+    branches: [cli]
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.*'
+      - 'scripts/check_cli*'
+      - '.github/workflows/cli.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Test, lint and build CLI
+        shell: bash
+        run: bash scripts/check_cli.sh
+      - name: Package standalone binary
+        shell: python
+        run: |
+          import hashlib, pathlib, platform, shutil
+          suffix = '.exe' if platform.system() == 'Windows' else ''
+          binary = pathlib.Path('target/release/sandflos' + suffix)
+          package = pathlib.Path('cli-package')
+          package.mkdir()
+          shutil.copy2(binary, package / binary.name)
+          shutil.copy2('docs/cli.md', package / 'README.md')
+          (package / 'SHA256SUMS').write_text(hashlib.sha256(binary.read_bytes()).hexdigest() + '  ' + binary.name + '\n')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandflos-${{ matrix.os }}
+          path: cli-package/
+          if-no-files-found: error
+  desktop-compatibility:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked -p send2boox-desktop-gpui

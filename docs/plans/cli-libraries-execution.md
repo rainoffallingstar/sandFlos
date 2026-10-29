@@ -1,0 +1,16 @@
+# CLI 书库实施记录
+
+日期：2026-10-29。公共边界为方案 S2/S3，SQLite 使用临时真实数据库，WebDAV 使用回环 HTTP。
+
+- 接手时已有 Calibre 配置测试和占位列表实现。全套基线运行：core 66 项通过；`selected_library_and_format_resolve_the_expected_book` 因列表长度 0（预期 1）失败。补齐显式目录的只读查询和格式定位后该测试通过。
+- `explicit_zotero_directory_resolves_local_attachment` 先因配置返回 None（预期显式数据目录）失败；随后实现配置与安全附件解析。
+- `zotero_list_reads_explicit_database_and_filters_titles` 先因列表为空失败；补齐只读列表后独立重跑通过。
+- `missing_local_attachment_downloads_webdav_and_cleans_up` 先因 WebDAV 占位返回 not implemented 失败；实现受限 ZIP 下载、凭据保存与 RAII 临时文件清理。
+
+新增实现不读取桌面端全局配置，不修改源 SQLite。Calibre 文件及 Zotero 本地存储附件限制在配置书库内；WebDAV 禁止跨主机重定向，非回环地址要求 HTTPS，限制压缩与解压大小为 200 MiB，拒绝越界 ZIP 路径和符号链接。
+
+完整 Green 结果及跨平台未验证事项以 tdd-integration.md 为准。测试过程中与其他模块存在共享编译锁及暂时编译错误；这些不算业务 Red。
+
+回归：`cargo test --locked -p boox-core --test cli_libraries`，8 passed、0 failed（包含正常 WebDAV 下载与 ZIP 越界拒绝）。配置拒绝无关 SQLite 的测试先因成功接受空数据库而失败，加入必要表校验后通过。配置修改持有 OS 文件锁，避免并发 read-modify-write 覆盖其他书库设置。
+
+集成审查补充：书库错误改为 `LibraryError`，包含类型化 kind 与脱敏 message；WebDAV 401/403 映射认证错误，连接/响应读取映射网络错误。随后补充 401 回归测试（这是审查后的回归测试，不宣称为先 Red 后 Green）。ZIP 越界测试也是已有防护的回归验证。
