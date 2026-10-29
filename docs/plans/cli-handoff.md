@@ -1,14 +1,14 @@
 # CLI 改造交班记录
 
-日期：2026-10-29。分支 `cli`。交接时的实现提交为 `b7e52bc feat(cli): implement standalone sandflos command-line interface`，其前置提交 `791b361` 只做桌面 autostart 依赖隔离，`9a3e009` 是审查与 TDD 方案。
+日期：2026-10-29。分支 `cli`。交接时的实现提交为 `b7e52bc feat(cli): implement standalone sandflos command-line interface`，之后是跨平台测试与 lint 修复 `d362e7f`、`6306364`。前置提交 `791b361` 只做桌面 autostart 依赖隔离，`9a3e009` 是审查与 TDD 方案。
 
 本文只描述当前可复现的状态。没有执行过的平台、真实账号和真实云端操作都明确标为未验证。
 
 ## 1. 现在处于什么进度
 
-M1 与 M2 的命令入口都已在 `crates/cli` 落地，`boox-core` 拆出可注入的服务层和认证服务；本机 Linux 上构建、测试、lint、依赖边界检查和 release smoke 全部通过。尚未完成的是端到端协议验收、跨平台运行验收和真实云端验收，具体缺口见第 5 节。
+M1 与 M2 的命令入口都已在 `crates/cli` 落地，`boox-core` 拆出可注入的服务层和认证服务；本机 Linux 上构建、测试、lint、依赖边界检查和 release smoke 全部通过，远端 Linux/macOS/Windows 三平台 CI 与 macOS 桌面兼容检查也已通过。尚未完成的是端到端协议验收、平台凭据与二维码的人工 smoke、真实云端与设备验收，具体缺口见第 5 节。
 
-当前工作区干净，`cli` 分支本地领先 `origin/cli` 两个提交（`791b361`、`b7e52bc`）；交班提交推送后以远端为准。
+交接时 HEAD 为本文档的提交，工作区干净，且已推送到 `origin/cli`。
 
 已实现并可运行：
 
@@ -40,7 +40,7 @@ bash scripts/check_cli.sh
 
 Linux 凭据存储需显式 `SANDFLOS_CREDENTIAL_STORE=file` 或使用 `SANDFLOS_TOKEN`；平台默认在 Linux 返回 `credential_store_unavailable`，这是有意行为，不要改成静默回退明文。
 
-三平台 workflow 写在 `.github/workflows/cli.yml`，但交接前尚未推送执行。CI 配置存在不等于 CI 通过。
+三平台 workflow 写在 `.github/workflows/cli.yml`。远端 `CLI` workflow 在提交 `6306364` 上已运行完成：`cli (ubuntu-latest)`、`cli (macos-latest)`、`cli (windows-latest)` 与 `desktop-compatibility` 全部 success。此前 `cc873fb` 与 `d362e7f` 的 macOS/Windows 失败已定位并修复：书库测试改为比较双方 canonicalize 后的路径；平台 keyring 分支的 `needless_return` 已清理。CI 通过仅覆盖自动测试、lint、release 构建与 smoke，不覆盖真实账号、扫码、云端推送与设备接收。
 
 ## 3. 关键实现位置
 
@@ -91,11 +91,10 @@ CLI 进程测试目前覆盖参数错误、认证生命周期、迁移和诊断�
 
 ### P2 跨平台与产物验收
 
-- macOS Keychain、Windows Credential Manager 与 Windows ACL 未运行验证。
+- macOS Keychain 与 Windows Credential Manager 已有编译和测试覆盖，但未有真实凭据写入/读取的 smoke 记录；Windows ACL 未验证。
 - 终端二维码可扫码性需人工 smoke；自动化只验证非 TTY 拒绝。
-- `.github/workflows/cli.yml` 尚未实际运行；Windows 的 `check_cli.sh` 依赖 bash，CI 虽声明 `shell: bash`，仍需远端结果确认。
-- 产物打包步骤在 workflow 内联 Python，`check_cli_artifact.py` 只验证本机 `target/release` 二进制，不验证下载后的压缩包可解压运行。
-- 桌面 `send2boox-desktop-gpui` 仅在 macOS CI 做 `cargo check`，本机未构建；桌面回归尚未执行。
+- 产物打包步骤在 workflow 内联 Python，`check_cli_artifact.py` 只验证本机 `target/release` 二进制；CI 已上传 artifact，但未验证下载后的压缩包可解压运行。
+- 桌面 `send2boox-desktop-gpui` 已在 macOS CI 做 `cargo check` 并通过；本机未构建，桌面人工回归尚未执行。
 
 ### P2 真实服务验收
 
@@ -110,7 +109,7 @@ CLI 进程测试目前覆盖参数错误、认证生命周期、迁移和诊断�
 ## 6. 下一位 agent 的接手步骤
 
 1. `git fetch && git checkout cli && git status`，确认 HEAD 与远端一致、工作区干净。
-2. `bash scripts/check_cli.sh` 复跑基线；若只在 Linux，记录凭据后端是显式 `file`。
+2. `bash scripts/check_cli.sh` 复跑基线；若只在 Linux，记录凭据后端是显式 `file`。远端三平台 CI 基线为 `6306364`，可作为比较起点。
 3. 先做第 5 节 P1 的回环协议测试，按 Red/Green 记录，不要用假后端测试冒充端到端通过。
 4. 推送后在 GitHub Actions 查看 `CLI` workflow 的三平台结果，再决定跨平台项是否关闭。
 5. 真实账号验收单独执行，不放入日常单测，不提交 token、Cookie、签名 URL 或响应正文。
@@ -118,4 +117,4 @@ CLI 进程测试目前覆盖参数错误、认证生命周期、迁移和诊断�
 
 ## 7. 交接时的明确结论
 
-本地 CLI 已可构建并在无显示环境启动，核心工作流与脚本契约已实现，121 项测试与严格 lint 通过。它还不是“已完成跨平台和真实云端验收”的状态；主要风险集中在真实 HTTP 契约、进程级 happy path、平台凭据与产物验证。
+本地 CLI 已可构建并在无显示环境启动，核心工作流与脚本契约已实现，121 项测试与严格 lint 通过；三平台 CI 与 macOS 桌面编译检查也已通过。它还不是“已完成真实云端验收”的状态；主要风险集中在真实 HTTP 契约、进程级 happy path、平台凭据与二维码的人工 smoke、下载产物运行与真实设备接收。
