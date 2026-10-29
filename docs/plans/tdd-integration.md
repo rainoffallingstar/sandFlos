@@ -23,7 +23,7 @@
 ## 最终本地验证
 
 - `cargo fmt -p boox-core -p sandflos-cli -- --check`：通过。
-- `cargo test --locked -p boox-core -p sandflos-cli`：80 core unit、8 library integration、2 CLI binary unit、13 auth、7 process contract、8 push/queue，全部通过。
+- `cargo test --locked -p boox-core -p sandflos-cli`：80 core unit、8 library integration、1 credential lock、1 push cancellation、2 CLI binary unit、13 auth、1 migration、7 process contract、8 push/queue，共 121 项，全部通过。
 - `cargo clippy --locked -p boox-core -p sandflos-cli --all-targets -- -D warnings`：通过。
 - `bash scripts/check_cli.sh`：执行 rustfmt、测试、CLI lint、release 构建、依赖边界与无显示 smoke。
 - 未提交推送；最终提交与 `cli` 分支推送由协调 agent 在整体审查后统一执行。
