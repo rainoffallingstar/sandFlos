@@ -30,7 +30,19 @@ jobs:
           python-version: '3.x'
       - name: Test, lint and build CLI
         shell: bash
-        run: bash scripts/check_cli.sh
+        run: |
+          set -o pipefail
+          bash scripts/check_cli.sh 2>&1 | tee cli-check.log
+      - name: Report CLI failure in check annotations
+        if: failure()
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('cli-check.log')
+          if path.exists():
+              tail = path.read_text(encoding='utf-8', errors='replace')[-12000:]
+              message = tail.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title=CLI check failed::{message}')
       - name: Package standalone binary
         shell: bash
         run: python3 scripts/package_cli.py
