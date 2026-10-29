@@ -585,7 +585,7 @@ impl CredentialStore for KeyringCredentialStore {
         {
             use keyring::Error as KeyringError;
             let entry = keyring_entry(&self.service)?;
-            return match entry.get_password() {
+            match entry.get_password() {
                 Ok(text) => {
                     let credential: PersistedCredential =
                         serde_json::from_str(&text).map_err(|_| {
@@ -610,7 +610,7 @@ impl CredentialStore for KeyringCredentialStore {
                     "credential_read_failed",
                     "无法读取平台凭据存储",
                 )),
-            };
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
@@ -638,7 +638,7 @@ impl CredentialStore for KeyringCredentialStore {
                 .map_err(|_| {
                     AuthError::storage("credential_write_failed", "无法保存到平台凭据存储")
                 })?;
-            return Ok(updated_ms);
+            Ok(updated_ms)
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
@@ -655,14 +655,14 @@ impl CredentialStore for KeyringCredentialStore {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             use keyring::Error as KeyringError;
-            return match keyring_entry(&self.service)?.delete_credential() {
+            match keyring_entry(&self.service)?.delete_credential() {
                 Ok(()) => Ok(true),
                 Err(KeyringError::NoEntry) => Ok(false),
                 Err(_) => Err(AuthError::storage(
                     "credential_delete_failed",
                     "无法删除平台凭据",
                 )),
-            };
+            }
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
