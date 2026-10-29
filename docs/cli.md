@@ -27,6 +27,28 @@ bash scripts/check_cli.sh
 
 脚本运行核心和 CLI 测试、CLI lint、release 构建、依赖边界与无显示环境 smoke。CI 为 Linux/macOS/Windows 构建独立二进制，并另设 macOS 桌面兼容性检查。CI 的配置不代表远端任务已经通过；真实扫码、云端推送和设备接收需单独验收。
 
+## 发布产物校验
+
+CI 在三个平台分别生成 `sandflos` / `sandflos.exe`、`README.md` 和 `SHA256SUMS`，随后由 `verify-package` 任务下载已上传的 artifact，重新检查并运行。下载后可本地复验：
+
+```bash
+# 已解压目录
+python3 scripts/verify_cli_package.py ./sandflos-linux-latest
+
+# GitHub Actions artifact ZIP
+python3 scripts/verify_cli_package.py ./sandflos-linux-latest.zip
+```
+
+校验器会拒绝路径穿越、符号链接和重复条目，核对包内文件集合与 SHA-256，检查 Unix 可执行位，并在清空 `DISPLAY`、`WAYLAND_DISPLAY` 和 token 环境变量后运行 `--help`、`--version`，确认不会创建配置目录。它验证产物本身可解包、可执行，不代表真实账号、云端推送或设备接收已经通过。
+
+本地重新打包：
+
+```bash
+cargo build --locked --release -p sandflos-cli
+python3 scripts/package_cli.py --output cli-package
+python3 scripts/verify_cli_package.py cli-package
+```
+
 架构与切片设计见 [TDD 方案](plans/cli-review-and-tdd.md)，实施证据见 [集成记录](plans/tdd-integration.md)。
 
 ## 命令示例

@@ -27,3 +27,7 @@
 - `cargo clippy --locked -p boox-core -p sandflos-cli --all-targets -- -D warnings`：通过。
 - `bash scripts/check_cli.sh`：执行 rustfmt、测试、CLI lint、release 构建、依赖边界与无显示 smoke。
 - 未提交推送；最终提交与 `cli` 分支推送由协调 agent 在整体审查后统一执行。
+
+## 产物下载验收补充
+
+`scripts/check_cli.sh` 现在还会运行打包脚本单元测试，并在 release 构建后生成 `target/cli-package`、核对 SHA-256、可执行位与无显示启动。`CLI` workflow 新增三平台 `verify-package` 任务，通过 GitHub API 下载本 run 上传的 ZIP 后再在对应平台解压执行。实现和证据见 `cli-artifact-verification.md`。本地已验证 7 项脚本测试、全新打包，以及 CI run `40963914110` 的真实 Linux artifact；macOS/Windows 新任务需下一次 CI 运行确认。

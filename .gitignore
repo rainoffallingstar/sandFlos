@@ -17,6 +17,7 @@
 
 # Rust / Tauri build outputs
 target/
+cli-package/
 src-tauri/target/
 .build-cache.noindex/
 
@@ -25,8 +26,10 @@ src-tauri/target/
 
 # Optional JS deps
 node_modules/
+__pycache__/
 
 # Misc
+sandflos-artifact.zip
 *.tmp
 *.temp
 

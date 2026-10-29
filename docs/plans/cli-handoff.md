@@ -56,6 +56,7 @@ Linux 凭据存储需显式 `SANDFLOS_CREDENTIAL_STORE=file` 或使用 `SANDFLOS
 | 书库配置与 SQLite/WebDAV | `crates/core/src/cli_libraries.rs` |
 | 原子替换（含 Windows） | `crates/core/src/persistence.rs` |
 | 依赖边界与无显示 smoke | `scripts/check_cli_artifact.py` |
+| 产物打包与下载验收 | `scripts/package_cli.py`、`scripts/verify_cli_package.py` |
 
 ## 4. 审查中已修正的问题（不要回退）
 
@@ -93,7 +94,7 @@ CLI 进程测试目前覆盖参数错误、认证生命周期、迁移和诊断�
 
 - macOS Keychain 与 Windows Credential Manager 已有编译和测试覆盖，但未有真实凭据写入/读取的 smoke 记录；Windows ACL 未验证。
 - 终端二维码可扫码性需人工 smoke；自动化只验证非 TTY 拒绝。
-- 产物打包步骤在 workflow 内联 Python，`check_cli_artifact.py` 只验证本机 `target/release` 二进制；CI 已上传 artifact，但未验证下载后的压缩包可解压运行。
+- 产物打包与下载验收已补齐：workflow 使用共用打包脚本，三平台 `verify-package` 任务会下载本 run 的 artifact ZIP，检查内容、校验和、可执行位并在无显示环境运行 `--help`/`--version`。实现与本地证据见 `cli-artifact-verification.md`；三平台新任务仍需下一次 CI run 证实。
 - 桌面 `send2boox-desktop-gpui` 已在 macOS CI 做 `cargo check` 并通过；本机未构建，桌面人工回归尚未执行。
 
 ### P2 真实服务验收
@@ -111,10 +112,10 @@ CLI 进程测试目前覆盖参数错误、认证生命周期、迁移和诊断�
 1. `git fetch && git checkout cli && git status`，确认 HEAD 与远端一致、工作区干净。
 2. `bash scripts/check_cli.sh` 复跑基线；若只在 Linux，记录凭据后端是显式 `file`。远端三平台 CI 基线为 `6306364`，可作为比较起点。
 3. 先做第 5 节 P1 的回环协议测试，按 Red/Green 记录，不要用假后端测试冒充端到端通过。
-4. 推送后在 GitHub Actions 查看 `CLI` workflow 的三平台结果，再决定跨平台项是否关闭。
+4. 推送后在 GitHub Actions 查看 `CLI` workflow 的 `cli` 与 `verify-package` 三平台结果，再决定跨平台项是否关闭。
 5. 真实账号验收单独执行，不放入日常单测，不提交 token、Cookie、签名 URL 或响应正文。
 6. 更新 `docs/plans/tdd-integration.md` 的证据与本文件的缺口状态；不要把未运行的平台或云端项写成通过。
 
 ## 7. 交接时的明确结论
 
-本地 CLI 已可构建并在无显示环境启动，核心工作流与脚本契约已实现，121 项测试与严格 lint 通过；三平台 CI 与 macOS 桌面编译检查也已通过。它还不是“已完成真实云端验收”的状态；主要风险集中在真实 HTTP 契约、进程级 happy path、平台凭据与二维码的人工 smoke、下载产物运行与真实设备接收。
+本地 CLI 已可构建并在无显示环境启动，核心工作流与脚本契约已实现，121 项测试与严格 lint 通过；三平台 CI 与 macOS 桌面编译检查也已通过。产物下载校验现已实现并完成本地与真实 Linux artifact 验证，三平台新任务待下一次 CI 确认。它还不是“已完成真实云端验收”的状态；主要风险集中在真实 HTTP 契约、进程级 happy path、平台凭据与二维码的人工 smoke，以及真实设备接收。
