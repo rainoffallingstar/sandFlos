@@ -730,9 +730,11 @@ name = "boox-core"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "bytes",
  "chrono",
  "dirs 5.0.1",
  "hmac",
+ "http-body",
  "httpdate",
  "keyring",
  "mime_guess",
@@ -742,6 +744,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "tokio",
  "tungstenite",
  "url",
  "urlencoding",

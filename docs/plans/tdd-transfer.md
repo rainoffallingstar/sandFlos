@@ -1,5 +1,7 @@
 # T7 传输与取消收尾记录
 
+本文件保留此前 reader 方案的历史记录。2026-10-30 续实施已将 OSS PUT 改为 owned runtime 中可取消的异步请求，修复 socket 背压下取消无法返回的问题；最新 Red/Green 与其他阻塞阶段的剩余限制见 [慢连接取消](cli-slow-cancellation.md)。200 MiB 本机性能实测见 [上传性能](cli-upload-performance.md)。下文旧实验与旧实现描述不作为当前实现结论。
+
 日期：2026-10-30。范围是本轮取消切片：`crates/cli/tests/push_cancellation.rs`、`crates/core/tests/push_cancellation.rs`、`crates/core/src/services.rs` 的取消相关 hunk，以及本文件。规范按 `cli-review-and-tdd.md` 的 S1/S2/S3 边界；既有实现的回归测试不冒充新的 Red。
 
 ## 取消语义

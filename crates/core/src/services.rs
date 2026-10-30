@@ -19,13 +19,15 @@ use crate::push::{
     build_oss_host, build_verified_signed_download_url_with_endpoints, content_type_for, sign_oss,
     wait_for_remote_push_doc_ready_with_endpoints,
 };
+use bytes::Bytes;
+use http_body::{Body as HttpBody, Frame, SizeHint};
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
     fmt, fs,
-    io::{self, Read},
+    io::Read,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime},
@@ -1143,25 +1145,54 @@ impl HttpPushBackend {
     }
 }
 
-/// Reads an upload body while honouring the process cancellation flag.
+/// A bounded-memory upload body that checks cancellation before each chunk.
 ///
-/// reqwest reads a streaming body on its worker thread, so checking only
-/// between push phases would keep reading a large local file after SIGINT.
-/// Returning an interrupted I/O error aborts the body and lets the caller
-/// report `cancelled` instead of a generic transport failure.
-struct CancellableReader {
+/// The async request future is polled by the upload runtime. Dropping it when
+/// cancellation is observed aborts the in-flight body without leaving a
+/// separate uploading worker behind.
+struct CancellableUploadBody {
     file: fs::File,
-    flag: &'static AtomicBool,
+    remaining: u64,
+    flag: Option<&'static AtomicBool>,
 }
 
-impl Read for CancellableReader {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if self.flag.load(Ordering::Relaxed) {
-            // Interrupted is commonly retried by read adapters. Use an
-            // ordinary nonretryable error so cancellation aborts the body.
-            return Err(io::Error::other("operation cancelled"));
+impl HttpBody for CancellableUploadBody {
+    type Data = Bytes;
+    type Error = std::io::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if this.flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return std::task::Poll::Ready(Some(Err(std::io::Error::other("operation cancelled"))));
         }
-        self.file.read(buffer)
+        if this.remaining == 0 {
+            return std::task::Poll::Ready(None);
+        }
+        let wanted = this.remaining.min(64 * 1024) as usize;
+        let mut chunk = vec![0u8; wanted];
+        match this.file.read(&mut chunk) {
+            Ok(0) => std::task::Poll::Ready(Some(Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "upload file ended before its declared length",
+            )))),
+            Ok(read) => {
+                this.remaining -= read as u64;
+                chunk.truncate(read);
+                std::task::Poll::Ready(Some(Ok(Frame::data(Bytes::from(chunk)))))
+            }
+            Err(error) => std::task::Poll::Ready(Some(Err(error))),
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.remaining)
     }
 }
 
@@ -1271,42 +1302,66 @@ impl PushBackend for HttpPushBackend {
         let file = fs::File::open(path).map_err(|error| {
             ServiceError::local_io("file_unreadable", "upload", error.to_string())
         })?;
-        let body = match self.cancel_flag {
-            Some(flag) => {
-                reqwest::blocking::Body::sized(CancellableReader { file, flag }, file_size)
-            }
-            None => reqwest::blocking::Body::sized(file, file_size),
-        };
         let url = self
             .endpoints
             .oss_url(&format!("https://{host}/{object_key}"));
-        let response = match self
-            .client
-            .put(&url)
-            .header("Date", date)
-            .header(CONTENT_TYPE, content_type)
-            .header(CONTENT_LENGTH, file_size.to_string())
-            .header("x-oss-security-token", sts.security_token.clone())
-            .header(AUTHORIZATION, authorization)
-            .body(body)
-            .send()
-        {
-            Ok(response) => response,
-            Err(_) if self.cancellation_requested() => {
+        let cancel_flag = self.cancel_flag;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| ServiceError::network("upload", "无法启动上传运行时"))?;
+        let timeout = self.timeout;
+        let result = runtime.block_on(async {
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(timeout)
+                .build()
+                .map_err(|_| ServiceError::network("upload", "无法创建上传客户端"))?;
+            let body = reqwest::Body::wrap(CancellableUploadBody {
+                file,
+                remaining: file_size,
+                flag: cancel_flag,
+            });
+            let pending = client
+                .put(&url)
+                .header("Date", date)
+                .header(CONTENT_TYPE, content_type)
+                .header(CONTENT_LENGTH, file_size.to_string())
+                .header("x-oss-security-token", sts.security_token.clone())
+                .header(AUTHORIZATION, authorization)
+                .body(body)
+                .send();
+            tokio::pin!(pending);
+            let result = loop {
+                match tokio::time::timeout(Duration::from_millis(25), &mut pending).await {
+                    Ok(result) => break Some(result.map(|response| response.status().as_u16())),
+                    Err(_) if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) => {
+                        break None;
+                    }
+                    Err(_) => {}
+                }
+            };
+            // Leaving this scope drops the response, request future, and client
+            // while the runtime is still alive. Dropping the future closes the
+            // in-flight connection; no background uploader remains.
+            Ok::<_, ServiceError>(result)
+        })?;
+        drop(runtime);
+        let status = match result {
+            None => return Err(ServiceError::cancelled("upload")),
+            Some(Err(_)) if self.cancellation_requested() => {
                 return Err(ServiceError::cancelled("upload"));
             }
-            Err(error) => return Err(classify("upload", error.into())),
+            Some(Err(error)) => return Err(classify("upload", error.into())),
+            Some(Ok(status)) => status,
         };
         if self.cancellation_requested() {
             return Err(ServiceError::cancelled("upload"));
         }
-        if response.status().is_success() {
+        if (200..300).contains(&status) {
             Ok(())
         } else {
-            Err(classify(
-                "upload",
-                ApiError::http(response.status().as_u16()),
-            ))
+            Err(classify("upload", ApiError::http(status)))
         }
     }
     fn signed_url(

@@ -55,6 +55,15 @@ CLI 独立发布使用 `cli-v<版本>` 标签，例如当前 CLI crate 的 `cli-
 
 架构与切片设计见 [TDD 方案](plans/cli-review-and-tdd.md)，实施证据见 [集成记录](plans/tdd-integration.md)。
 
+Linux 上可选运行真实 CLI 子进程的回环上传基准，测量 200 MiB 上传的采样峰值 RSS 与吞吐，并校验精确字节/内容与单次 OSS PUT。只有这个大型基准需要手动运行；它不在常规 CI 或 `scripts/check_cli.sh` 中：
+
+```bash
+cargo build --locked --release -p sandflos-cli
+python3 scripts/benchmark_cli_upload.py --runs 1 --json
+```
+
+该脚本使用合成凭据和回环 HTTP 夹具；测量仅代表本机回环路径，不代表生产网络、OSS 或设备接收性能。峰值是约 1 ms 采样的子进程 `VmHWM`，最后一次采样间隔内可能存在未观察到的峰值。方法、实测数据与限制见 [上传性能证据](plans/cli-upload-performance.md)。
+
 ## 命令示例
 
 ```bash

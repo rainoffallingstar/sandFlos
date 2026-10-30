@@ -1,5 +1,19 @@
 # CLI 改造交班记录
 
+## 续实施：上传性能与慢连接取消（2026-10-30）
+
+本轮起点为 `406ef53720dabf1df412359558dc8b8bc2002940`，继续使用 DeepSeek V4.1 Flash（high）子 agent，父 agent 集成审查。最终代码提交与 CI 结果将在本轮完成后填入本节；下方此前的 `db3903b`/run `41014099241` 是历史验收，不能证明本轮改动。
+
+- `cli-upload-performance.md`：新增可复现的 Linux 8/200 MiB 真实 CLI 回环上传基准，核对长度、SHA-256、单次 PUT 和 accepted；测量子进程采样 VmHWM，明确最后采样间隔和本机环境限制。
+- `cli-slow-cancellation.md`：慢速 OSS 写背压取消的行为 Red/Green 与修复范围；只有 OSS PUT 使用可取消异步边界，其余阶段继续保留既有确认/unknown 语义。
+- `cli-state-migration.md`：桌面全局状态调用链及迁移评估；本轮未迁移桌面状态，登录交付、连续进度和平台人工回归仍需后续处理。
+
+本机最终 `CARGO_NET_OFFLINE=true bash scripts/check_cli.sh` 已通过：**198 项 Rust 测试、7 项 Python 测试，0 失败**，fmt、严格 clippy、release 构建、依赖闭包、无显示启动、打包运行通过。日志 `/tmp/sandflos-cli-next-final-check.log`。新构建的 release 二进制完成 8/200 MiB 和缓冲对照测量；200 MiB 采样 VmHWM 为 6.156 MiB，精确内容与单次请求验收通过。基准的无效 CLI 输出 2 MiB 对照在 2.64 秒内被拒绝，无管道死锁；没有将这些已有/审查补验行为补造为 Red。
+
+规范轴与方案轴审查分别见 `cli-next-standards-review.md`、`cli-next-spec-review.md`，各自包含父 agent 处置。客户端构造两行策略与独立夹具的协议样本重复作为判断项保留，未宣称全部维护债务消失。
+
+## 此前已完成的验收
+
 更新：2026-10-30。仓库 `/home/fallingstar10/shire/sandFlos`，分支 `cli`。本轮从 `4d6a48a139851c7f169ed83bd0e1055031d86587` 继续，按原方案及已确认的 S1–S4 由 DeepSeek V4.1 Flash（high）子 agent 实施，父 agent 串联、集成与审查。
 
 本轮最终代码与测试提交为 **`db3903bfa16f3cb2dc26d37cf97e6dcbebccc123`**，已推送至 `origin/cli`；对应 CLI workflow **run `41014099241`，7/7 成功**。其中产品实现提交为 `73f36f8`，`db3903b` 修正跨平台路径测试。`7c2e4fc` 是中间提交，不能单独当作最终验收。后续收尾提交只更新文档，不改变这份已验证代码。

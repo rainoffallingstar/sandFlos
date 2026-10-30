@@ -11,7 +11,7 @@
 | T4 | QR pending/confirmed/expired/rejected、缺 token、等待/HTTP 超时、取消、网络失败；非交互拒绝 | 手机扫描终端二维码与真实登录 |
 | T5 | 真实适配器的 OSS、消息写入、同步、单次最终提交；保留消息 ID 和 resource key | 生产 BOOX/OSS/neocloud；云端接受与设备收到分开记录 |
 | T6 | 逐文件成功/失败/unknown、稳定聚合退出码、输入/200 MiB/配额检查 | 真实大文件性能属于 T7 人工验收 |
-| T7 | 有长度的流式 body；慢连接/中断/确认丢失；过期 STS 在连接前拒绝；阶段间与批次取消；进度只在 OSS 确认后报告 | 200 MiB 实际峰值内存、吞吐和生产慢链路；最终取消用例结果见 `tdd-transfer.md` |
+| T7 | 有长度的流式 body；OSS 写背压下可取消异步 PUT；慢连接/中断/确认丢失；STS 到期；阶段/批次取消；进度在 OSS 确认后报告；Linux 200 MiB 字节/哈希与采样内存、吞吐实测 | 生产慢链路和其他平台性能；采样不等于精确最终峰值。其余阻塞 HTTP 阶段仍可能等待请求超时。见 `cli-slow-cancellation.md`、`cli-upload-performance.md` |
 | T8 | 有限队列窗口、查询错误保留、显式删除、404、两步部分完成、重推一次和 unknown；准备阶段保留认证错误类别 | 生产删除职责与业务码语义尚需脱敏样本确认 |
 | T9 | 独立查询、设备地址校验、合法日期、跨年与不同本机时区、缺数据保持 null | 上游统计时区尚未确认，输出 `timezone:null`，不宣称 UTC/本地时间 |
 | T10 | 显式多库、按库+格式 ID 精确选择、真实只读 SQLite、分页/搜索与失败分类 | 书库边界补验结果见 `tdd-boundaries.md` |
