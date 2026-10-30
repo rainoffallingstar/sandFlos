@@ -2,7 +2,9 @@
 
 ## 续实施：上传性能与慢连接取消（2026-10-30）
 
-本轮起点为 `406ef53720dabf1df412359558dc8b8bc2002940`，继续使用 DeepSeek V4.1 Flash（high）子 agent，父 agent 集成审查。最终代码提交与 CI 结果将在本轮完成后填入本节；下方此前的 `db3903b`/run `41014099241` 是历史验收，不能证明本轮改动。
+本轮起点为 `406ef53720dabf1df412359558dc8b8bc2002940`，继续使用 DeepSeek V4.1 Flash（high）子 agent，父 agent 集成审查。**最终代码/测试提交 `c460ab66704e4d253b954fc85d089c420d04a3a8`，对应 CLI run `41024736353`，7/7 成功**，已推送 `origin/cli`。产品实现为 `18d9d55`，`c460ab6` 修复 TCP 分段下的测试前缀读取。其后仅更新交班文档。下方此前的 `db3903b`/run `41014099241` 是历史验收，不能证明本轮改动。
+
+最终远端验收：Linux/macOS/Windows 三个 CLI job 的测试、lint、release 构建、无显示运行与版本化 ZIP 验证全部通过；三平台从 GitHub 下载产物后校验并运行均通过；macOS 桌面兼容编译通过。Windows 不执行 Unix SIGINT 用例；不以构建通过替代真实平台/桌面人工验收。
 
 - `cli-upload-performance.md`：新增可复现的 Linux 8/200 MiB 真实 CLI 回环上传基准，核对长度、SHA-256、单次 PUT 和 accepted；测量子进程采样 VmHWM，明确最后采样间隔和本机环境限制。
 - `cli-slow-cancellation.md`：慢速 OSS 写背压取消的行为 Red/Green 与修复范围；只有 OSS PUT 使用可取消异步边界，其余阶段继续保留既有确认/unknown 语义。
@@ -11,6 +13,8 @@
 本机最终 `CARGO_NET_OFFLINE=true bash scripts/check_cli.sh` 已通过：**198 项 Rust 测试、7 项 Python 测试，0 失败**，fmt、严格 clippy、release 构建、依赖闭包、无显示启动、打包运行通过。日志 `/tmp/sandflos-cli-next-final-check.log`。新构建的 release 二进制完成 8/200 MiB 和缓冲对照测量；200 MiB 采样 VmHWM 为 6.156 MiB，精确内容与单次请求验收通过。基准的无效 CLI 输出 2 MiB 对照在 2.64 秒内被拒绝，无管道死锁；没有将这些已有/审查补验行为补造为 Red。
 
 规范轴与方案轴审查分别见 `cli-next-standards-review.md`、`cli-next-spec-review.md`，各自包含父 agent 处置。客户端构造两行策略与独立夹具的协议样本重复作为判断项保留，未宣称全部维护债务消失。
+
+当前仍需后续处理：桌面 app 持有状态的实际迁移；非 OSS 阶段阻塞 HTTP 的取消上限；真实平台凭据/ACL、扫码和桌面人工回归；生产 BOOX/OSS/WebDAV、设备接收和真实 tag 到 draft release 事件链；生产及其他平台性能。200 MiB 本机回环采样已经完成，不再整体标为“未测”，但未证明无采样遗漏的绝对峰值或生产吞吐。
 
 ## 此前已完成的验收
 
