@@ -239,6 +239,166 @@ fn webdav_archive_case_with_password(
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
+fn webdav_corrupt_archive_is_a_typed_error_and_leaves_no_temporary_files() {
+    use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
+    use std::io::{BufRead, Write};
+
+    let root = std::env::temp_dir().join(format!("cli-webdav-corrupt-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap();
+    db.execute_batch("CREATE TABLE items(itemID INTEGER,key TEXT); CREATE TABLE itemAttachments(itemID INTEGER,path TEXT,linkMode INTEGER); INSERT INTO items VALUES(4,'ABCDEFGH'); INSERT INTO itemAttachments VALUES(4,'storage:book.pdf',0);").unwrap();
+    let config = root.join("config");
+    configure_zotero(&config, &root).unwrap();
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/zotero", server.local_addr().unwrap());
+    configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
+        .unwrap();
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = server.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap() > 0 {
+            if line == "\r\n" {
+                break;
+            }
+            line.clear();
+        }
+        let body = b"this is not a zip archive";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body).unwrap();
+    });
+    let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(3))
+        .err()
+        .expect("corrupt archive must be rejected");
+    worker.join().unwrap();
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+    assert!(!error.message.contains("server body must not be echoed"));
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn webdav_missing_archive_is_not_found() {
+    use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
+    use std::io::{BufRead, Write};
+
+    let root = std::env::temp_dir().join(format!("cli-webdav-404-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap();
+    db.execute_batch("CREATE TABLE items(itemID INTEGER,key TEXT); CREATE TABLE itemAttachments(itemID INTEGER,path TEXT,linkMode INTEGER); INSERT INTO items VALUES(4,'ABCDEFGH'); INSERT INTO itemAttachments VALUES(4,'storage:book.pdf',0);").unwrap();
+    let config = root.join("config");
+    configure_zotero(&config, &root).unwrap();
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/zotero", server.local_addr().unwrap());
+    configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
+        .unwrap();
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = server.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap() > 0 {
+            if line == "\r\n" {
+                break;
+            }
+            line.clear();
+        }
+        write!(
+            stream,
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+    });
+    let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(3))
+        .err()
+        .expect("missing archive must fail");
+    worker.join().unwrap();
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::NotFound);
+    assert_eq!(error.message, "WebDAV attachment not found");
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn webdav_expanded_archive_over_limit_is_rejected_before_extraction() {
+    use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
+    use std::io::{BufRead, Write};
+
+    let root = std::env::temp_dir().join(format!("cli-webdav-large-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap();
+    db.execute_batch("CREATE TABLE items(itemID INTEGER,key TEXT); CREATE TABLE itemAttachments(itemID INTEGER,path TEXT,linkMode INTEGER); INSERT INTO items VALUES(4,'ABCDEFGH'); INSERT INTO itemAttachments VALUES(4,'storage:book.pdf',0);").unwrap();
+    let config = root.join("config");
+    configure_zotero(&config, &root).unwrap();
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/zotero", server.local_addr().unwrap());
+    configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
+        .unwrap();
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = server.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap() > 0 {
+            if line == "\r\n" {
+                break;
+            }
+            line.clear();
+        }
+
+        // Build a structurally valid ZIP whose payload expands past the
+        // 200 MiB extraction limit while the compressed archive stays small.
+        let payload_len = 200_usize * 1024 * 1024 + 1;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file(
+            "book.pdf",
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+        let chunk = vec![0u8; 1024 * 1024];
+        let mut remaining = payload_len;
+        while remaining > 0 {
+            let take = remaining.min(chunk.len());
+            zip.write_all(&chunk[..take]).unwrap();
+            remaining -= take;
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        );
+        // The client can reject the expanded size before the body finishes,
+        // so a reset while the fixture is still writing is expected.
+        let _ = stream.write_all(header.as_bytes());
+        let _ = stream.write_all(&bytes);
+    });
+    let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(30))
+        .err()
+        .expect("oversized expanded archive must fail");
+    worker.join().unwrap();
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+    assert_eq!(error.message, "expanded ZIP too large");
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn configuration_rejects_an_unrelated_sqlite_database() {
     use boox_core::cli_libraries::*;
     let root = std::env::temp_dir().join(format!("cli-wrong-db-{}", uuid::Uuid::new_v4()));
@@ -247,5 +407,213 @@ fn configuration_rejects_an_unrelated_sqlite_database() {
     drop(rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap());
     assert!(configure_calibre(&root.join("config"), vec![root.clone()]).is_err());
     assert!(configure_zotero(&root.join("config"), &root).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn calibre_lists_duplicate_ids_from_separate_libraries_with_their_own_paths() {
+    use boox_core::cli_libraries::*;
+
+    let root = std::env::temp_dir().join(format!("cli-two-libs-{}", uuid::Uuid::new_v4()));
+    let first = root.join("first");
+    let second = root.join("second");
+    for (library, title, file) in [
+        (&first, "First Book", "first.epub"),
+        (&second, "Second Book", "second.epub"),
+    ] {
+        fs::create_dir_all(library.join("author/book")).unwrap();
+        fs::write(library.join("author/book").join(file), title.as_bytes()).unwrap();
+        let db = rusqlite::Connection::open(library.join("metadata.db")).unwrap();
+        db.execute_batch(&format!(
+            "CREATE TABLE books(id INTEGER, title TEXT, author_sort TEXT, path TEXT, last_modified TEXT, pubdate TEXT);
+             CREATE TABLE data(id INTEGER, book INTEGER, format TEXT, name TEXT, uncompressed_size INTEGER);
+             INSERT INTO books VALUES(1,'{title}','Author','author/book','2026-01-01','2000-01-01');
+             INSERT INTO data VALUES(7,1,'EPUB','{}','{}');",
+            file.trim_end_matches(".epub"),
+            title.len()
+        ))
+        .unwrap();
+        drop(db);
+    }
+
+    let config = root.join("config");
+    configure_calibre(&config, vec![first.clone(), second.clone()]).unwrap();
+    let books = calibre_list(&config, None, None, None).unwrap();
+    assert_eq!(books.len(), 2, "{books:#?}");
+    let mut resolved = books
+        .iter()
+        .map(|book| {
+            let format = book
+                .formats
+                .iter()
+                .find(|format| format.data_id == 7)
+                .expect("format id 7");
+            (
+                book.library_dir.clone(),
+                fs::read(calibre_file(std::path::Path::new(&format.library_dir), 7).unwrap())
+                    .unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    resolved.sort();
+    assert_eq!(
+        resolved,
+        vec![
+            (first.to_string_lossy().to_string(), b"First Book".to_vec()),
+            (
+                second.to_string_lossy().to_string(),
+                b"Second Book".to_vec()
+            ),
+        ]
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn webdav_rejects_archive_symlink_entries() {
+    use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
+    use std::io::{BufRead, Write};
+
+    let root = std::env::temp_dir().join(format!("cli-webdav-symlink-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap();
+    db.execute_batch("CREATE TABLE items(itemID INTEGER,key TEXT); CREATE TABLE itemAttachments(itemID INTEGER,path TEXT,linkMode INTEGER); INSERT INTO items VALUES(4,'ABCDEFGH'); INSERT INTO itemAttachments VALUES(4,'storage:book.pdf',0);").unwrap();
+    let config = root.join("config");
+    configure_zotero(&config, &root).unwrap();
+    let server = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let url = format!("http://{}/zotero", server.local_addr().unwrap());
+    configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
+        .unwrap();
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = server.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap() > 0 {
+            if line == "\r\n" {
+                break;
+            }
+            line.clear();
+        }
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.add_symlink(
+            "book.pdf",
+            "../../outside.pdf",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )
+        .unwrap();
+        stream.write_all(&bytes).unwrap();
+    });
+    let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(3))
+        .err()
+        .expect("symlink archive must fail");
+    worker.join().unwrap();
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+    assert_eq!(error.message, "unsafe ZIP path");
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn calibre_listing_is_paged_globally_across_libraries() {
+    use boox_core::cli_libraries::*;
+
+    let root = std::env::temp_dir().join(format!("cli-calibre-page-{}", uuid::Uuid::new_v4()));
+    let first = root.join("first");
+    let second = root.join("second");
+    for (library, books) in [
+        (&first, [("Alpha", "2026-01-01"), ("Gamma", "2026-01-03")]),
+        (&second, [("Beta", "2026-01-02"), ("Delta", "2026-01-04")]),
+    ] {
+        for (index, (title, _date)) in books.into_iter().enumerate() {
+            let book_dir = format!("author/book{}", index + 1);
+            fs::create_dir_all(library.join(&book_dir)).unwrap();
+            fs::write(library.join(&book_dir).join("book.epub"), title.as_bytes()).unwrap();
+        }
+        let db = rusqlite::Connection::open(library.join("metadata.db")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE books(id INTEGER, title TEXT, author_sort TEXT, path TEXT, last_modified TEXT, pubdate TEXT);
+             CREATE TABLE data(id INTEGER, book INTEGER, format TEXT, name TEXT, uncompressed_size INTEGER);",
+        )
+        .unwrap();
+        for (index, (title, date)) in books.into_iter().enumerate() {
+            let book_id = index as i64 + 1;
+            db.execute(
+                "INSERT INTO books VALUES(?1,?2,'Author',?3,?4,'2000-01-01')",
+                rusqlite::params![book_id, title, format!("author/book{}", index + 1), date],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO data VALUES(?1,?2,'EPUB','book',4)",
+                rusqlite::params![book_id, book_id],
+            )
+            .unwrap();
+        }
+        drop(db);
+    }
+
+    let config = root.join("config");
+    configure_calibre(&config, vec![first, second]).unwrap();
+    let titles = |limit, offset| {
+        calibre_list(&config, limit, offset, None)
+            .unwrap()
+            .into_iter()
+            .map(|book| book.title)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(titles(None, None), ["Delta", "Gamma", "Beta", "Alpha"]);
+    assert_eq!(titles(Some(2), Some(1)), ["Gamma", "Beta"]);
+    assert!(titles(Some(2), Some(10)).is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn calibre_listing_reports_a_locked_database_without_hanging_and_can_be_retried() {
+    use boox_core::cli_libraries::*;
+
+    let root = std::env::temp_dir().join(format!("cli-calibre-lock-{}", uuid::Uuid::new_v4()));
+    let library = root.join("books");
+    fs::create_dir_all(library.join("author/book")).unwrap();
+    fs::write(library.join("author/book/book.epub"), b"book").unwrap();
+    let db_path = library.join("metadata.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE books(id INTEGER, title TEXT, author_sort TEXT, path TEXT, last_modified TEXT, pubdate TEXT);
+         CREATE TABLE data(id INTEGER, book INTEGER, format TEXT, name TEXT, uncompressed_size INTEGER);
+         INSERT INTO books VALUES(1,'Locked','Author','author/book','2026-01-01','2000-01-01');
+         INSERT INTO data VALUES(7,1,'EPUB','book',4);",
+    )
+    .unwrap();
+    let config = root.join("config");
+    configure_calibre(&config, vec![library]).unwrap();
+
+    let locker = rusqlite::Connection::open(&db_path).unwrap();
+    locker.execute_batch("BEGIN EXCLUSIVE").unwrap();
+    let started = std::time::Instant::now();
+    let error = calibre_list(&config, None, None, None).unwrap_err();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "a locked Calibre database must fail promptly"
+    );
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+    assert_eq!(error.message, "cannot query Calibre database");
+    locker.execute_batch("ROLLBACK").unwrap();
+    drop(locker);
+
+    let books = calibre_list(&config, None, None, None).unwrap();
+    assert_eq!(books.len(), 1);
+    assert_eq!(books[0].title, "Locked");
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }

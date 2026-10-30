@@ -399,13 +399,18 @@ fn download_attachment(
         .send()
         .map_err(|_| LibraryError::network("WebDAV network failure"))?;
     if !response.status().is_success() {
+        let status = response.status().as_u16();
         return Err(LibraryError {
-            kind: if matches!(response.status().as_u16(), 401 | 403) {
-                crate::services::ServiceErrorKind::Authentication
-            } else {
-                crate::services::ServiceErrorKind::Network
+            kind: match status {
+                401 | 403 => crate::services::ServiceErrorKind::Authentication,
+                404 => crate::services::ServiceErrorKind::NotFound,
+                _ => crate::services::ServiceErrorKind::Network,
             },
-            message: format!("WebDAV HTTP {}", response.status().as_u16()),
+            message: if status == 404 {
+                "WebDAV attachment not found".to_string()
+            } else {
+                format!("WebDAV HTTP {status}")
+            },
         });
     }
     if response.content_length().is_some_and(|len| len > MAX) {

@@ -4,7 +4,7 @@ use crate::api::{
     fetch_default_bucket_with_endpoints, fetch_push_doc_value_with_endpoints,
     fetch_push_doc_with_endpoints, fetch_sts_for_auth_with_endpoints,
     put_existing_push_message_doc_with_endpoints, put_push_message_doc_with_endpoints,
-    save_and_push_with_endpoints,
+    save_and_push_with_endpoints, ApiError, ApiErrorKind,
 };
 use crate::dashboard::build_dashboard_snapshot;
 use crate::device::{is_local_transfer_host, normalize_transfer_host_url};
@@ -233,8 +233,7 @@ x-oss-security-token:{}
         Ok(())
     } else {
         let status = response.status();
-        let body = response.text().unwrap_or_default();
-        Err(format!("OSS 上传失败 ({status}): {body}"))
+        Err(format!("OSS 上传失败 ({status})"))
     }
 }
 
@@ -300,30 +299,14 @@ fn signed_download_url_with_endpoints(
     ))
 }
 
-fn diagnostic_excerpt(text: &str, max_chars: usize) -> String {
-    let mut out = String::new();
-    for (idx, ch) in text.chars().enumerate() {
-        if idx >= max_chars {
-            out.push('…');
-            break;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn verify_oss_object_via_signed_url(client: &Client, signed_url: &str) -> Result<(), String> {
-    let response = client
-        .get(signed_url)
-        .header("Range", "bytes=0-0")
-        .send()
-        .map_err(|err| err.to_string())?;
+fn verify_oss_object_via_signed_url(client: &Client, signed_url: &str) -> Result<(), ApiError> {
+    let response = client.get(signed_url).header("Range", "bytes=0-0").send()?;
     let status = response.status();
     if status.as_u16() == 200 || status.as_u16() == 206 {
-        return Ok(());
+        Ok(())
+    } else {
+        Err(ApiError::http(status.as_u16()))
     }
-    let body = response.text().unwrap_or_default();
-    Err(format!("HTTP {status}: {}", diagnostic_excerpt(&body, 220)))
 }
 
 fn sts_remaining_seconds(sts: &OssSts) -> Option<i64> {
@@ -337,7 +320,7 @@ pub(crate) fn build_verified_signed_download_url_with_endpoints(
     auth: &UploadAuthContext,
     bucket: &BucketConfig,
     object_key: &str,
-) -> Result<String, String> {
+) -> Result<String, ApiError> {
     let mut last_err = None;
 
     for attempt in 0..3 {
@@ -348,17 +331,25 @@ pub(crate) fn build_verified_signed_download_url_with_endpoints(
             .map(|value| value <= MIN_STS_REMAINING_SECS_FOR_SIGNED_URL)
             .unwrap_or(false)
         {
-            let err = format!(
+            last_err = Some(ApiError::protocol(format!(
                 "STS 剩余有效期过短: {}s",
                 remaining_secs.unwrap_or_default()
-            );
-            last_err = Some(err);
+            )));
         } else {
             let signed_url =
-                signed_download_url_with_endpoints(endpoints, bucket, &sts, object_key)?;
+                match signed_download_url_with_endpoints(endpoints, bucket, &sts, object_key) {
+                    Ok(url) => url,
+                    Err(error) => {
+                        last_err = Some(ApiError::protocol(error));
+                        if attempt < 2 {
+                            thread::sleep(Duration::from_millis(400 * (attempt as u64 + 1)));
+                        }
+                        continue;
+                    }
+                };
             match verify_oss_object_via_signed_url(client, &signed_url) {
                 Ok(()) => return Ok(signed_url),
-                Err(err) => last_err = Some(err),
+                Err(error) => last_err = Some(error),
             }
         }
 
@@ -367,7 +358,7 @@ pub(crate) fn build_verified_signed_download_url_with_endpoints(
         }
     }
 
-    Err(last_err.unwrap_or_else(|| "生成可用的签名下载链接失败".to_string()))
+    Err(last_err.unwrap_or_else(|| ApiError::protocol("生成可用的签名下载链接失败")))
 }
 
 pub(crate) fn wait_for_remote_push_doc_ready_with_endpoints(
@@ -376,16 +367,13 @@ pub(crate) fn wait_for_remote_push_doc_ready_with_endpoints(
     auth: &UploadAuthContext,
     doc_id: &str,
     expected_rev: &str,
-) -> Result<(), String> {
+) -> Result<(), ApiError> {
     let mut last_err = None;
     for attempt in 0..8 {
         match fetch_push_doc_with_endpoints(endpoints, client, auth, doc_id) {
             Ok(detail) if detail.rev == expected_rev => return Ok(()),
-            Ok(detail) => {
-                last_err = Some(format!(
-                    "推送消息 rev 尚未稳定，期望 {expected_rev}，实际 {}",
-                    detail.rev
-                ));
+            Ok(_) => {
+                last_err = Some(ApiError::protocol("推送消息版本尚未同步到预期版本"));
             }
             Err(err) => last_err = Some(err),
         }
@@ -393,7 +381,7 @@ pub(crate) fn wait_for_remote_push_doc_ready_with_endpoints(
             thread::sleep(Duration::from_millis(250 * (attempt as u64 + 1)));
         }
     }
-    Err(last_err.unwrap_or_else(|| "推送消息未能及时同步到 neocloud".to_string()))
+    Err(last_err.unwrap_or_else(|| ApiError::protocol("推送消息未能及时同步到 neocloud")))
 }
 
 fn update_push_doc_for_resend_at(
@@ -782,18 +770,27 @@ pub fn push_resend_with_auth(
 /// Distinguish rejected preparation from a write whose result is unconfirmed.
 #[derive(Debug)]
 pub enum ResendError {
-    BeforeSubmission(String),
-    AfterSubmission(String),
+    BeforeSubmission(ApiError),
+    AfterSubmission(ApiError),
 }
 impl From<String> for ResendError {
-    fn from(error: String) -> Self {
+    fn from(_error: String) -> Self {
+        Self::BeforeSubmission(ApiError::protocol("推送记录无法准备为可提交的消息"))
+    }
+}
+
+impl From<ApiError> for ResendError {
+    fn from(error: ApiError) -> Self {
+        // Keep the status/business classification until the service layer
+        // maps it. Stringifying here would turn a rejected credential into an
+        // indistinguishable protocol error.
         Self::BeforeSubmission(error)
     }
 }
 impl std::fmt::Display for ResendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BeforeSubmission(error) | Self::AfterSubmission(error) => f.write_str(error),
+            Self::BeforeSubmission(error) | Self::AfterSubmission(error) => error.fmt(f),
         }
     }
 }
@@ -806,7 +803,7 @@ pub fn push_resend_with_auth_with_endpoints(
     id: &str,
 ) -> Result<(), ResendError> {
     if id.trim().is_empty() {
-        return Err(ResendError::BeforeSubmission("重推记录 id 不能为空".into()));
+        return Err(ResendError::BeforeSubmission(ApiError::input("重推记录 id 不能为空")));
     }
     let (_bucket_key, bucket) = fetch_default_bucket_with_endpoints(endpoints, client)?;
     let mut raw_doc = fetch_push_doc_value_with_endpoints(endpoints, client, auth, id)?;
@@ -873,11 +870,8 @@ pub fn push_resend_with_auth_with_endpoints(
     }
 }
 
-fn is_not_found_push_error(error: &str) -> bool {
-    error
-        .strip_prefix("HTTP ")
-        .and_then(|rest| rest.split_whitespace().next())
-        == Some("404")
+fn is_not_found_push_error(error: &ApiError) -> bool {
+    error.kind == ApiErrorKind::HttpStatus && error.status == Some(404)
 }
 
 pub fn dashboard_push_delete_inner(doc_id: &str) -> Result<(), String> {

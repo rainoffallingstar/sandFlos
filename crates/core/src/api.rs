@@ -1,5 +1,5 @@
 use crate::models::{
-    ApiEnvelope, BucketConfig, DashboardPushItem, OssSts, PhoneOrEmailLoginRequest, PushDocDetail,
+    BucketConfig, DashboardPushItem, OssSts, PhoneOrEmailLoginRequest, PushDocDetail,
     QrCheckResponse, QrCreateResponse, SyncToken, UploadAuthContext, VerifyCodeRequest,
 };
 use crate::state::get_auth_state;
@@ -8,14 +8,124 @@ use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::cookie::{CookieStore, Jar};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, SET_COOKIE};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{fmt, time::Duration};
 use url::Url;
 use uuid::Uuid;
 
 const BASE_URL: &str = "https://send2boox.com";
 const DEFAULT_BUCKET_KEY: &str = "onyx-cloud";
 const PUSH_QUEUE_LIMIT: usize = 30;
+
+/// Failure classification at the HTTP boundary.
+///
+/// Response bodies and transport details are deliberately absent from this
+/// type. They can contain credentials, signed URLs, or other server-controlled
+/// data and must not become part of a public result or diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiErrorKind {
+    Input,
+    Authentication,
+    Network,
+    Timeout,
+    HttpStatus,
+    Business,
+    Protocol,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApiError {
+    pub kind: ApiErrorKind,
+    pub status: Option<u16>,
+    pub result_code: Option<i64>,
+    pub message: String,
+}
+
+impl ApiError {
+    fn new(
+        kind: ApiErrorKind,
+        status: Option<u16>,
+        result_code: Option<i64>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            status,
+            result_code,
+            message: message.into(),
+        }
+    }
+
+    pub fn input(message: impl Into<String>) -> Self {
+        Self::new(ApiErrorKind::Input, None, None, message)
+    }
+
+    pub fn authentication(message: impl Into<String>) -> Self {
+        Self::new(ApiErrorKind::Authentication, None, None, message)
+    }
+
+    pub fn network(message: impl Into<String>) -> Self {
+        Self::new(ApiErrorKind::Network, None, None, message)
+    }
+
+    pub fn timeout(message: impl Into<String>) -> Self {
+        Self::new(ApiErrorKind::Timeout, None, None, message)
+    }
+
+    pub fn http(status: u16) -> Self {
+        Self::new(
+            ApiErrorKind::HttpStatus,
+            Some(status),
+            None,
+            format!("服务端返回 HTTP {status}"),
+        )
+    }
+
+    pub fn business(result_code: i64) -> Self {
+        Self::business_with_status(result_code, 200)
+    }
+
+    pub fn business_with_status(result_code: i64, status: u16) -> Self {
+        Self::new(
+            ApiErrorKind::Business,
+            Some(status),
+            Some(result_code),
+            format!("服务端返回业务错误 (result_code={result_code})"),
+        )
+    }
+
+    pub fn protocol(message: impl Into<String>) -> Self {
+        Self::new(ApiErrorKind::Protocol, None, None, message)
+    }
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+impl From<reqwest::Error> for ApiError {
+    fn from(error: reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::timeout("网络请求超时")
+        } else {
+            Self::network("网络请求失败")
+        }
+    }
+}
+
+impl From<ApiError> for String {
+    fn from(error: ApiError) -> Self {
+        error.to_string()
+    }
+}
+
+pub type ApiResult<T> = Result<T, ApiError>;
 
 /// Explicit service origins. Production clients never consult test environment variables.
 #[derive(Clone, Debug)]
@@ -30,9 +140,9 @@ impl ApiEndpoints {
             oss: None,
         }
     }
-    pub fn loopback(api: &str, oss: &str) -> Result<Self, String> {
-        fn validate(value: &str) -> Result<String, String> {
-            let u = Url::parse(value).map_err(|_| "invalid test endpoint")?;
+    pub fn loopback(api: &str, oss: &str) -> ApiResult<Self> {
+        fn validate(value: &str) -> ApiResult<String> {
+            let u = Url::parse(value).map_err(|_| ApiError::input("invalid test endpoint"))?;
             let local = match u.host() {
                 Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
                 Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
@@ -46,7 +156,9 @@ impl ApiEndpoints {
                 || u.fragment().is_some()
                 || u.path() != "/"
             {
-                return Err("test endpoint must be a literal loopback origin".into());
+                return Err(ApiError::input(
+                    "test endpoint must be a literal loopback origin",
+                ));
             }
             Ok(u.origin().ascii_serialization())
         }
@@ -69,16 +181,16 @@ impl ApiEndpoints {
     }
 }
 
-pub fn create_client(timeout_secs: u64) -> Result<Client, String> {
+pub fn create_client(timeout_secs: u64) -> ApiResult<Client> {
     Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(timeout_secs))
         .build()
-        .map_err(|err| err.to_string())
+        .map_err(ApiError::from)
 }
 
-pub fn create_client_with_base_url(timeout_secs: u64, base_url: &str) -> Result<Client, String> {
-    let _ = Url::parse(base_url).map_err(|err| err.to_string())?;
+pub fn create_client_with_base_url(timeout_secs: u64, base_url: &str) -> ApiResult<Client> {
+    Url::parse(base_url).map_err(|_| ApiError::input("认证服务地址无效"))?;
     create_client(timeout_secs)
 }
 
@@ -89,26 +201,42 @@ fn with_optional_token(request: RequestBuilder, token: Option<&str>) -> RequestB
     }
 }
 
-fn parse_envelope<T: DeserializeOwned>(text: &str) -> Result<T, String> {
-    let value: ApiEnvelope<T> = serde_json::from_str(text).map_err(|err| err.to_string())?;
-    if value.result_code != 0 {
-        return Err(value
-            .message
-            .unwrap_or_else(|| format!("result_code={}", value.result_code)));
+fn parse_envelope_with_status<T: DeserializeOwned>(
+    text: &str,
+    status: Option<u16>,
+) -> ApiResult<T> {
+    // Parse the stable envelope fields independently of `data`. A failed
+    // response can omit `data` or use a different shape for it; its business
+    // code remains meaningful and must not be lost as an unparseable response.
+    let value: Value =
+        serde_json::from_str(text).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
+    let result_code = match value.get("result_code") {
+        None => 0, // Preserve the legacy envelope's optional success code.
+        Some(code) => code
+            .as_i64()
+            .ok_or_else(|| ApiError::protocol("无效的响应业务码"))?,
+    };
+    if result_code != 0 {
+        return Err(ApiError::business_with_status(
+            result_code,
+            status.unwrap_or(200),
+        ));
     }
-    Ok(value.data)
+    let data = value
+        .get("data")
+        .cloned()
+        .ok_or_else(|| ApiError::protocol("成功响应缺少 data"))?;
+    serde_json::from_value(data).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
 }
 
-pub fn api_get_value(client: &Client, url: &str, token: Option<&str>) -> Result<Value, String> {
-    let response = with_optional_token(client.get(url), token)
-        .send()
-        .map_err(|err| err.to_string())?;
+pub fn api_get_value(client: &Client, url: &str, token: Option<&str>) -> ApiResult<Value> {
+    let response = with_optional_token(client.get(url), token).send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    parse_envelope(&text)
+    let text = response.text()?;
+    parse_envelope_with_status(&text, Some(status.as_u16()))
 }
 
 pub fn api_post_value(
@@ -116,43 +244,41 @@ pub fn api_post_value(
     url: &str,
     token: Option<&str>,
     body: &Value,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     let response = with_optional_token(
         client.post(url).header(CONTENT_TYPE, "application/json"),
         token,
     )
     .body(body.to_string())
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    parse_envelope(&text)
+    let text = response.text()?;
+    parse_envelope_with_status(&text, Some(status.as_u16()))
 }
 
-pub fn create_qr_login(client: &Client) -> Result<QrCreateResponse, String> {
+pub fn create_qr_login(client: &Client) -> ApiResult<QrCreateResponse> {
     create_qr_login_at(client, BASE_URL)
 }
 
-pub fn create_qr_login_at(client: &Client, base_url: &str) -> Result<QrCreateResponse, String> {
+pub fn create_qr_login_at(client: &Client, base_url: &str) -> ApiResult<QrCreateResponse> {
     let response = client
         .post(format!("{base_url}/api/1/auth/qrcode/create"))
         .header(CONTENT_TYPE, "application/json")
         .body(json!({ "clientType": "web" }).to_string())
-        .send()
-        .map_err(|err| err.to_string())?;
+        .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    let data = parse_envelope::<Value>(&text)?;
+    let data = parse_envelope_with_status::<Value>(&text, Some(status.as_u16()))?;
     parse_qr_create_response(data)
 }
 
-fn parse_qr_create_response(data: Value) -> Result<QrCreateResponse, String> {
+fn parse_qr_create_response(data: Value) -> ApiResult<QrCreateResponse> {
     if let Some(raw) = data
         .as_str()
         .and_then(|value| normalize_optional(Some(value.to_string())))
@@ -167,7 +293,7 @@ fn parse_qr_create_response(data: Value) -> Result<QrCreateResponse, String> {
         .or_else(|| json_field_to_string(&data, "qrcodeId"))
         .or_else(|| json_field_to_string(&data, "id"))
         .or_else(|| json_field_to_string(&data, "qrcode"))
-        .ok_or_else(|| "二维码接口返回缺少 qrcodeId".to_string())?;
+        .ok_or_else(|| ApiError::protocol("二维码接口返回缺少 qrcodeId"))?;
     let qrcode_data = json_field_to_string(&data, "data")
         .or_else(|| json_field_to_string(&data, "qrcode"))
         .or_else(|| json_field_to_string(&data, "qrcodeData"))
@@ -179,7 +305,7 @@ fn parse_qr_create_response(data: Value) -> Result<QrCreateResponse, String> {
     })
 }
 
-pub fn check_qr_login(client: &Client, qrcode_id: &str) -> Result<QrCheckResponse, String> {
+pub fn check_qr_login(client: &Client, qrcode_id: &str) -> ApiResult<QrCheckResponse> {
     check_qr_login_at(client, BASE_URL, qrcode_id)
 }
 
@@ -187,22 +313,21 @@ pub fn check_qr_login_at(
     client: &Client,
     base_url: &str,
     qrcode_id: &str,
-) -> Result<QrCheckResponse, String> {
+) -> ApiResult<QrCheckResponse> {
     let normalized_qrcode_id = normalize_qr_check_id(qrcode_id);
     let response = client
         .get(format!("{base_url}/api/1/auth/qrcode/check"))
         .query(&[("clientType", "web"), ("qrcodeId", normalized_qrcode_id)])
-        .send()
-        .map_err(|err| err.to_string())?;
+        .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    parse_envelope(&text)
+    parse_envelope_with_status(&text, Some(status.as_u16()))
 }
 
-pub fn send_verify_code(client: &Client, payload: &VerifyCodeRequest) -> Result<(), String> {
+pub fn send_verify_code(client: &Client, payload: &VerifyCodeRequest) -> ApiResult<()> {
     send_verify_code_with_endpoints(&crate::api::ApiEndpoints::production(), client, payload)
 }
 
@@ -210,27 +335,26 @@ pub fn send_verify_code_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     payload: &VerifyCodeRequest,
-) -> Result<(), String> {
+) -> ApiResult<()> {
     let base_url = endpoints.api_base();
     let response = client
         .post(format!("{base_url}/api/1/users/sendVerifyCode"))
         .header(CONTENT_TYPE, "application/json")
-        .body(serde_json::to_string(payload).map_err(|err| err.to_string())?)
-        .send()
-        .map_err(|err| err.to_string())?;
+        .body(serde_json::to_string(payload).map_err(|_| ApiError::protocol("无法编码请求"))?)
+        .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    let _: Value = parse_envelope(&text)?;
+    let _: Value = parse_envelope_with_status(&text, Some(status.as_u16()))?;
     Ok(())
 }
 
 pub fn signup_by_phone_or_email(
     client: &Client,
     payload: &PhoneOrEmailLoginRequest,
-) -> Result<String, String> {
+) -> ApiResult<String> {
     signup_by_phone_or_email_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -242,20 +366,19 @@ pub fn signup_by_phone_or_email_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     payload: &PhoneOrEmailLoginRequest,
-) -> Result<String, String> {
+) -> ApiResult<String> {
     let base_url = endpoints.api_base();
     let response = client
         .post(format!("{base_url}/api/1/users/signupByPhoneOrEmail"))
         .header(CONTENT_TYPE, "application/json")
-        .body(serde_json::to_string(payload).map_err(|err| err.to_string())?)
-        .send()
-        .map_err(|err| err.to_string())?;
+        .body(serde_json::to_string(payload).map_err(|_| ApiError::protocol("无法编码请求"))?)
+        .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    let data = parse_envelope::<Value>(&text)?;
+    let data = parse_envelope_with_status::<Value>(&text, Some(status.as_u16()))?;
     parse_phone_or_email_login_token(data)
 }
 
@@ -267,7 +390,7 @@ fn normalize_qr_check_id(qrcode_id: &str) -> &str {
         .unwrap_or(qrcode_id)
 }
 
-fn parse_phone_or_email_login_token(data: Value) -> Result<String, String> {
+fn parse_phone_or_email_login_token(data: Value) -> ApiResult<String> {
     if let Some(token) = data
         .as_str()
         .and_then(|value| normalize_optional(Some(value.to_string())))
@@ -277,7 +400,7 @@ fn parse_phone_or_email_login_token(data: Value) -> Result<String, String> {
 
     json_field_to_string(&data, "token")
         .or_else(|| json_field_to_string(&data, "access_token"))
-        .ok_or_else(|| "登录接口返回缺少 token".to_string())
+        .ok_or_else(|| ApiError::protocol("登录接口返回缺少 token"))
 }
 
 pub fn auth_source_text(auth: &UploadAuthContext) -> String {
@@ -288,16 +411,17 @@ pub fn auth_source_text(auth: &UploadAuthContext) -> String {
     }
 }
 
-pub fn fetch_auth_context_and_user(client: &Client) -> Result<(UploadAuthContext, Value), String> {
+pub fn fetch_auth_context_and_user(client: &Client) -> ApiResult<(UploadAuthContext, Value)> {
     fetch_auth_context_and_user_with_endpoints(&crate::api::ApiEndpoints::production(), client)
 }
 
 pub fn fetch_auth_context_and_user_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
-) -> Result<(UploadAuthContext, Value), String> {
+) -> ApiResult<(UploadAuthContext, Value)> {
     let auth = get_auth_state();
-    let value = normalize_optional(auth.token).ok_or_else(|| "当前未登录".to_string())?;
+    let value =
+        normalize_optional(auth.token).ok_or_else(|| ApiError::authentication("当前未登录"))?;
     fetch_auth_context_for_token_with_endpoints(endpoints, client, &value)
 }
 
@@ -308,7 +432,7 @@ pub fn fetch_auth_context_and_user_with_endpoints(
 pub fn fetch_auth_context_for_token(
     client: &Client,
     value: &str,
-) -> Result<(UploadAuthContext, Value), String> {
+) -> ApiResult<(UploadAuthContext, Value)> {
     fetch_auth_context_for_token_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -320,7 +444,7 @@ pub fn fetch_auth_context_for_token_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     value: &str,
-) -> Result<(UploadAuthContext, Value), String> {
+) -> ApiResult<(UploadAuthContext, Value)> {
     let (mut auth, user) = fetch_identity_for_token_with_endpoints(endpoints, client, value)?;
     // Uploads must not proceed when the quota request failed.
     let storage = fetch_storage_with_endpoints(endpoints, client, &auth.bearer)?;
@@ -338,11 +462,12 @@ pub fn fetch_identity_for_token_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     value: &str,
-) -> Result<(UploadAuthContext, Value), String> {
+) -> ApiResult<(UploadAuthContext, Value)> {
     let value = normalize_optional(Some(value.to_string()))
-        .ok_or_else(|| "认证凭据不能为空".to_string())?;
+        .ok_or_else(|| ApiError::authentication("认证凭据不能为空"))?;
     let user = fetch_user_me_at(client, endpoints.api_base(), &value)?;
-    let uid = json_field_to_string(&user, "uid").ok_or_else(|| "登录信息缺少 uid".to_string())?;
+    let uid =
+        json_field_to_string(&user, "uid").ok_or_else(|| ApiError::protocol("登录信息缺少 uid"))?;
     let auth = UploadAuthContext {
         bearer: value,
         uid,
@@ -352,15 +477,15 @@ pub fn fetch_identity_for_token_with_endpoints(
     Ok((auth, user))
 }
 
-pub fn fetch_user_me(client: &Client, token: &str) -> Result<Value, String> {
+pub fn fetch_user_me(client: &Client, token: &str) -> ApiResult<Value> {
     fetch_user_me_at(client, BASE_URL, token)
 }
 
-pub fn fetch_user_me_at(client: &Client, base_url: &str, token: &str) -> Result<Value, String> {
+pub fn fetch_user_me_at(client: &Client, base_url: &str, token: &str) -> ApiResult<Value> {
     api_get_value(client, &format!("{base_url}/api/1/users/me"), Some(token))
 }
 
-pub fn fetch_storage(client: &Client, token: &str) -> Result<Value, String> {
+pub fn fetch_storage(client: &Client, token: &str) -> ApiResult<Value> {
     fetch_storage_with_endpoints(&crate::api::ApiEndpoints::production(), client, token)
 }
 
@@ -368,7 +493,7 @@ pub fn fetch_storage_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     token: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     let base_url = endpoints.api_base();
     api_get_value(
         client,
@@ -377,7 +502,7 @@ pub fn fetch_storage_with_endpoints(
     )
 }
 
-pub fn fetch_devices(client: &Client, token: &str) -> Result<Value, String> {
+pub fn fetch_devices(client: &Client, token: &str) -> ApiResult<Value> {
     fetch_devices_with_endpoints(&crate::api::ApiEndpoints::production(), client, token)
 }
 
@@ -385,7 +510,7 @@ pub fn fetch_devices_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     token: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     let base_url = endpoints.api_base();
     api_get_value(
         client,
@@ -394,7 +519,7 @@ pub fn fetch_devices_with_endpoints(
     )
 }
 
-pub fn fetch_reading_info(client: &Client, token: &str) -> Result<Value, String> {
+pub fn fetch_reading_info(client: &Client, token: &str) -> ApiResult<Value> {
     fetch_reading_info_with_endpoints(&crate::api::ApiEndpoints::production(), client, token)
 }
 
@@ -402,7 +527,7 @@ pub fn fetch_reading_info_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     token: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     let base_url = endpoints.api_base();
     api_get_value(
         client,
@@ -416,7 +541,7 @@ pub fn fetch_read_time_info(
     token: &str,
     date: &str,
     range: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     fetch_read_time_info_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -432,21 +557,20 @@ pub fn fetch_read_time_info_with_endpoints(
     token: &str,
     date: &str,
     range: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     let base_url = endpoints.api_base();
     let response = with_optional_token(
         client.get(format!("{base_url}/api/1/statistics/readTimeInfo")),
         Some(token),
     )
     .query(&[("date", date), ("range", range)])
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    parse_envelope(&text)
+    parse_envelope_with_status(&text, Some(status.as_u16()))
 }
 
 pub fn fetch_day_read(
@@ -454,7 +578,7 @@ pub fn fetch_day_read(
     token: &str,
     start_time: &str,
     end_time: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     fetch_day_read_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -470,55 +594,54 @@ pub fn fetch_day_read_with_endpoints(
     token: &str,
     start_time: &str,
     end_time: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     let base_url = endpoints.api_base();
     let response = with_optional_token(
         client.get(format!("{base_url}/api/1/statistics/dayRead")),
         Some(token),
     )
     .query(&[("startTime", start_time), ("endTime", end_time)])
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    parse_envelope(&text)
+    parse_envelope_with_status(&text, Some(status.as_u16()))
 }
 
 pub fn fetch_buckets(
     client: &Client,
-) -> Result<std::collections::HashMap<String, BucketConfig>, String> {
+) -> ApiResult<std::collections::HashMap<String, BucketConfig>> {
     fetch_buckets_with_endpoints(&crate::api::ApiEndpoints::production(), client)
 }
 
 pub fn fetch_buckets_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
-) -> Result<std::collections::HashMap<String, BucketConfig>, String> {
+) -> ApiResult<std::collections::HashMap<String, BucketConfig>> {
     let base_url = endpoints.api_base();
     let data = api_get_value(client, &format!("{base_url}/api/1/config/buckets"), None)?;
-    serde_json::from_value(data).map_err(|err| err.to_string())
+    serde_json::from_value(data).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
 }
 
-pub fn fetch_default_bucket(client: &Client) -> Result<(String, BucketConfig), String> {
+pub fn fetch_default_bucket(client: &Client) -> ApiResult<(String, BucketConfig)> {
     fetch_default_bucket_with_endpoints(&crate::api::ApiEndpoints::production(), client)
 }
 
 pub fn fetch_default_bucket_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
-) -> Result<(String, BucketConfig), String> {
+) -> ApiResult<(String, BucketConfig)> {
     let buckets = fetch_buckets_with_endpoints(endpoints, client)?;
     buckets
         .get_key_value(DEFAULT_BUCKET_KEY)
         .or_else(|| buckets.iter().next())
         .map(|(key, value)| (key.clone(), value.clone()))
-        .ok_or_else(|| "未获取到可用 bucket 配置".to_string())
+        .ok_or_else(|| ApiError::protocol("未获取到可用 bucket 配置"))
 }
 
-pub fn fetch_sts_for_auth(client: &Client, auth: &UploadAuthContext) -> Result<OssSts, String> {
+pub fn fetch_sts_for_auth(client: &Client, auth: &UploadAuthContext) -> ApiResult<OssSts> {
     fetch_sts_for_auth_with_endpoints(&crate::api::ApiEndpoints::production(), client, auth)
 }
 
@@ -526,17 +649,17 @@ pub fn fetch_sts_for_auth_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     auth: &UploadAuthContext,
-) -> Result<OssSts, String> {
+) -> ApiResult<OssSts> {
     let base_url = endpoints.api_base();
     let data = api_get_value(
         client,
         &format!("{base_url}/api/1/config/stss"),
         Some(&auth.bearer),
     )?;
-    serde_json::from_value(data).map_err(|err| err.to_string())
+    serde_json::from_value(data).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
 }
 
-fn sync_cookie_header(sync: &SyncToken) -> Result<String, String> {
+fn sync_cookie_header(sync: &SyncToken) -> ApiResult<String> {
     let cookie_name = sync
         .cookie_name
         .as_deref()
@@ -546,7 +669,7 @@ fn sync_cookie_header(sync: &SyncToken) -> Result<String, String> {
         .session_id
         .as_deref()
         .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| "syncToken 缺少 session_id".to_string())?;
+        .ok_or_else(|| ApiError::protocol("syncToken 缺少 session_id"))?;
     Ok(format!("{cookie_name}={session_id}"))
 }
 
@@ -554,22 +677,22 @@ fn fetch_sync_token_materials_for_auth_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     auth: &UploadAuthContext,
-) -> Result<(SyncToken, Vec<String>), String> {
+) -> ApiResult<(SyncToken, Vec<String>)> {
     let base_url = endpoints.api_base();
     let response = with_optional_token(
         client.get(format!("{base_url}/api/1/users/syncToken")),
         Some(&auth.bearer),
     )
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let headers = response.headers().clone();
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    let data = parse_envelope::<Value>(&text)?;
-    let sync: SyncToken = serde_json::from_value(data).map_err(|err| err.to_string())?;
+    let data = parse_envelope_with_status::<Value>(&text, Some(status.as_u16()))?;
+    let sync: SyncToken = serde_json::from_value(data)
+        .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
     let set_cookies = headers
         .get_all(SET_COOKIE)
         .iter()
@@ -585,9 +708,10 @@ fn neocloud_request(
     set_cookies: &[String],
     method: reqwest::Method,
     url: &str,
-) -> Result<RequestBuilder, String> {
-    let cookie_url = Url::parse(endpoints.api_base()).map_err(|err| err.to_string())?;
-    let request_url = Url::parse(url).map_err(|err| err.to_string())?;
+) -> ApiResult<RequestBuilder> {
+    let cookie_url =
+        Url::parse(endpoints.api_base()).map_err(|_| ApiError::protocol("invalid API endpoint"))?;
+    let request_url = Url::parse(url).map_err(|_| ApiError::protocol("invalid request URL"))?;
     let jar = Jar::default();
     jar.add_cookie_str(&sync_cookie_header(sync)?, &cookie_url);
     for set_cookie in set_cookies {
@@ -595,7 +719,7 @@ fn neocloud_request(
     }
     let cookie = jar
         .cookies(&request_url)
-        .ok_or_else(|| "syncToken 缺少可用 cookie".to_string())?;
+        .ok_or_else(|| ApiError::protocol("syncToken 缺少可用 cookie"))?;
     // Reuse the caller's client so timeout and redirect policy also cover
     // neocloud requests. Cookie selection still honours domain/path/secure.
     Ok(client.request(method, request_url).header(COOKIE, cookie))
@@ -654,7 +778,7 @@ fn parse_push_item_doc(doc: &Value) -> Option<DashboardPushItem> {
 pub fn fetch_push_queue_for_dashboard(
     client: &Client,
     auth: &UploadAuthContext,
-) -> Result<Vec<DashboardPushItem>, String> {
+) -> ApiResult<Vec<DashboardPushItem>> {
     fetch_push_queue_for_dashboard_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -666,7 +790,7 @@ pub fn fetch_push_queue_for_dashboard_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     auth: &UploadAuthContext,
-) -> Result<Vec<DashboardPushItem>, String> {
+) -> ApiResult<Vec<DashboardPushItem>> {
     let base_url = endpoints.api_base();
     let (sync, set_cookies) =
         fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
@@ -684,15 +808,15 @@ pub fn fetch_push_queue_for_dashboard_with_endpoints(
         reqwest::Method::GET,
         &url,
     )?
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
 
-    let value: Value = serde_json::from_str(&text).map_err(|err| err.to_string())?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
     let rows = value
         .get("results")
         .and_then(Value::as_array)
@@ -720,7 +844,7 @@ pub fn fetch_push_doc_value(
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     fetch_push_doc_value_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -734,7 +858,7 @@ pub fn fetch_push_doc_value_with_endpoints(
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     let base_url = endpoints.api_base();
     let (sync, set_cookies) =
         fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
@@ -747,25 +871,24 @@ pub fn fetch_push_doc_value_with_endpoints(
         reqwest::Method::GET,
         &url,
     )?
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
         crate::diagnostics::warn(
             "api.fetch_push_doc_value",
             format!("doc_id={doc_id} status={status} body={}", "[redacted]"),
         );
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    serde_json::from_str(&text).map_err(|err| err.to_string())
+    serde_json::from_str(&text).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
 }
 
 pub fn fetch_push_doc(
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
-) -> Result<PushDocDetail, String> {
+) -> ApiResult<PushDocDetail> {
     fetch_push_doc_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -779,20 +902,16 @@ pub fn fetch_push_doc_with_endpoints(
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
-) -> Result<PushDocDetail, String> {
+) -> ApiResult<PushDocDetail> {
     let doc = fetch_push_doc_value_with_endpoints(endpoints, client, auth, doc_id)?;
-    let item = parse_push_item_doc(&doc).ok_or_else(|| "推送记录格式不完整".to_string())?;
+    let item = parse_push_item_doc(&doc).ok_or_else(|| ApiError::protocol("推送记录格式不完整"))?;
     Ok(PushDocDetail {
         rev: item.rev.unwrap_or_default(),
         resource_key: item.resource_key.unwrap_or_default(),
     })
 }
 
-pub fn delete_push_doc(
-    client: &Client,
-    auth: &UploadAuthContext,
-    doc_id: &str,
-) -> Result<(), String> {
+pub fn delete_push_doc(client: &Client, auth: &UploadAuthContext, doc_id: &str) -> ApiResult<()> {
     delete_push_doc_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -806,7 +925,7 @@ pub fn delete_push_doc_with_endpoints(
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
-) -> Result<(), String> {
+) -> ApiResult<()> {
     let base_url = endpoints.api_base();
     let detail = fetch_push_doc_with_endpoints(endpoints, client, auth, doc_id)?;
     let (sync, set_cookies) =
@@ -824,12 +943,10 @@ pub fn delete_push_doc_with_endpoints(
         reqwest::Method::DELETE,
         &url,
     )?
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
     if !status.is_success() {
-        return Err(format!("HTTP {status}: {text}"));
+        return Err(ApiError::http(status.as_u16()));
     }
     Ok(())
 }
@@ -838,7 +955,7 @@ pub fn batch_delete_push_message(
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
-) -> Result<(), String> {
+) -> ApiResult<()> {
     batch_delete_push_message_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -852,7 +969,7 @@ pub fn batch_delete_push_message_with_endpoints(
     client: &Client,
     auth: &UploadAuthContext,
     doc_id: &str,
-) -> Result<(), String> {
+) -> ApiResult<()> {
     let base_url = endpoints.api_base();
     let _ = api_post_value(
         client,
@@ -873,7 +990,7 @@ pub fn save_and_push(
     resource_type: &str,
     cb_id: &str,
     cb_rev: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     save_and_push_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -898,7 +1015,7 @@ pub fn save_and_push_with_endpoints(
     resource_type: &str,
     cb_id: &str,
     cb_rev: &str,
-) -> Result<Value, String> {
+) -> ApiResult<Value> {
     let base_url = endpoints.api_base();
     let body = json!({
         "data": {
@@ -932,7 +1049,7 @@ pub fn put_existing_push_message_doc(
     client: &Client,
     auth: &UploadAuthContext,
     doc: &Value,
-) -> Result<(String, String), String> {
+) -> ApiResult<(String, String)> {
     put_existing_push_message_doc_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -946,11 +1063,12 @@ pub fn put_existing_push_message_doc_with_endpoints(
     client: &Client,
     auth: &UploadAuthContext,
     doc: &Value,
-) -> Result<(String, String), String> {
+) -> ApiResult<(String, String)> {
     let base_url = endpoints.api_base();
-    let doc_id = json_field_to_string(doc, "_id").ok_or_else(|| "推送消息缺少 _id".to_string())?;
+    let doc_id =
+        json_field_to_string(doc, "_id").ok_or_else(|| ApiError::protocol("推送消息缺少 _id"))?;
     let doc_rev =
-        json_field_to_string(doc, "_rev").ok_or_else(|| "推送消息缺少 _rev".to_string())?;
+        json_field_to_string(doc, "_rev").ok_or_else(|| ApiError::protocol("推送消息缺少 _rev"))?;
     let (sync, set_cookies) =
         fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
     let url = format!("{base_url}/neocloud/{}", urlencoding::encode(&doc_id));
@@ -965,10 +1083,9 @@ pub fn put_existing_push_message_doc_with_endpoints(
     .header(ACCEPT, "application/json")
     .header(CONTENT_TYPE, "application/json")
     .body(doc.to_string())
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
         crate::diagnostics::warn(
             "api.put_existing_push_message_doc",
@@ -977,15 +1094,16 @@ pub fn put_existing_push_message_doc_with_endpoints(
                 "[redacted]"
             ),
         );
-        return Err(format!("HTTP {status}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    let value: Value = serde_json::from_str(&text).map_err(|err| err.to_string())?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
     if json_field_to_string(&value, "error").is_some() {
         crate::diagnostics::warn(
             "api.put_existing_push_message_doc",
             format!("doc_id={doc_id} doc_rev={doc_rev} remote_error=true"),
         );
-        return Err("remote message update rejected".to_string());
+        return Err(ApiError::protocol("remote message update rejected"));
     }
     let id = json_field_to_string(&value, "id").unwrap_or(doc_id);
     let rev = json_field_to_string(&value, "rev")
@@ -1002,7 +1120,7 @@ pub fn put_push_message_doc(
     resource_type: &str,
     object_key: &str,
     signed_url: &str,
-) -> Result<(String, String), String> {
+) -> ApiResult<(String, String)> {
     put_push_message_doc_with_endpoints(
         &crate::api::ApiEndpoints::production(),
         client,
@@ -1025,7 +1143,7 @@ pub fn put_push_message_doc_with_endpoints(
     resource_type: &str,
     object_key: &str,
     signed_url: &str,
-) -> Result<(String, String), String> {
+) -> ApiResult<(String, String)> {
     let base_url = endpoints.api_base();
     let (sync, set_cookies) =
         fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
@@ -1087,10 +1205,9 @@ pub fn put_push_message_doc_with_endpoints(
     .header(ACCEPT, "application/json")
     .header(CONTENT_TYPE, "application/json")
     .body(message_doc.to_string())
-    .send()
-    .map_err(|err| err.to_string())?;
+    .send()?;
     let status = response.status();
-    let text = response.text().map_err(|err| err.to_string())?;
+    let text = response.text()?;
     if !status.is_success() {
         crate::diagnostics::warn(
             "api.put_push_message_doc",
@@ -1099,19 +1216,20 @@ pub fn put_push_message_doc_with_endpoints(
                 "[redacted]"
             ),
         );
-        return Err(format!("HTTP {status}"));
+        return Err(ApiError::http(status.as_u16()));
     }
-    let value: Value = serde_json::from_str(&text).map_err(|err| err.to_string())?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
     if json_field_to_string(&value, "error").is_some() {
         crate::diagnostics::warn(
             "api.put_push_message_doc",
             format!("message_id={message_id} remote_error=true"),
         );
-        return Err("remote message write rejected".to_string());
+        return Err(ApiError::protocol("remote message write rejected"));
     }
     let id = json_field_to_string(&value, "id").unwrap_or(message_id);
     let rev = json_field_to_string(&value, "rev")
-        .ok_or_else(|| format!("neocloud 返回缺少 rev: {text}"))?;
+        .ok_or_else(|| ApiError::protocol("neocloud 返回缺少 rev"))?;
     Ok((id, rev))
 }
 

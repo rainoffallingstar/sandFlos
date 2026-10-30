@@ -1,6 +1,6 @@
 use crate::api::{
     check_qr_login_at, create_client, create_client_with_base_url, create_qr_login_at,
-    fetch_user_me_at,
+    fetch_user_me_at, ApiError, ApiErrorKind,
 };
 use crate::util::{json_field_to_string, normalize_optional, unix_ms_now};
 use serde::{Deserialize, Serialize};
@@ -246,25 +246,32 @@ impl HttpAuthClient {
     }
 }
 
-fn api_error(error: String) -> AuthError {
-    if let Some(rest) = error.strip_prefix("HTTP ") {
-        let status = rest
-            .split_whitespace()
-            .next()
-            .and_then(|value| value.parse::<u16>().ok());
-        return match status {
+fn api_error(error: ApiError) -> AuthError {
+    match error.kind {
+        ApiErrorKind::Input => AuthError::input("invalid_endpoint", "认证服务地址无效"),
+        ApiErrorKind::Authentication => {
+            AuthError::authentication("missing_credentials", "当前未登录或认证凭据缺失")
+        }
+        ApiErrorKind::Timeout => AuthError::timeout("认证服务请求超时"),
+        ApiErrorKind::Network => AuthError::network("network_error", "无法完成认证服务请求"),
+        ApiErrorKind::HttpStatus => match error.status {
             Some(401) | Some(403) => {
                 AuthError::authentication("credential_rejected", "认证凭据无效或已过期")
             }
-            Some(code) => AuthError::network("http_error", format!("认证服务返回 HTTP {code}")),
+            Some(status) => AuthError::network("http_error", format!("认证服务返回 HTTP {status}")),
             None => AuthError::network("protocol_error", "认证服务返回了无法识别的响应"),
-        };
+        },
+        ApiErrorKind::Business => AuthError::network(
+            "business_error",
+            format!(
+                "认证服务返回业务错误 (result_code={})",
+                error.result_code.unwrap_or_default()
+            ),
+        ),
+        ApiErrorKind::Protocol => {
+            AuthError::network("protocol_error", "认证服务返回了无法识别的响应")
+        }
     }
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("timed out") || lower.contains("timeout") {
-        return AuthError::timeout("认证服务请求超时");
-    }
-    AuthError::network("network_error", "无法完成认证服务请求")
 }
 
 impl AuthClient for HttpAuthClient {

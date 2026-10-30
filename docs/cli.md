@@ -7,7 +7,7 @@ cargo build --locked --release -p sandflos-cli
 ./target/release/sandflos --help
 ```
 
-Windows 二进制名为 `sandflos.exe`。默认工作区成员为 core 和 cli；构建桌面端请显式指定 `-p send2boox-desktop-gpui`。
+Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。默认工作区成员为 core 和 cli；构建桌面端请显式指定 `-p send2boox-desktop-gpui`。
 
 ## 自动化契约
 
@@ -49,6 +49,10 @@ python3 scripts/package_cli.py --output cli-package
 python3 scripts/verify_cli_package.py cli-package
 ```
 
+CLI 独立发布使用 `cli-v<版本>` 标签，例如当前 CLI crate 的 `cli-v0.1.0`，与桌面端每日发布流程分开。`release-cli.yml` 先核对标签与 `crates/cli/Cargo.toml` 版本一致，再在三个平台执行完整检查、生成原生 ZIP 与外部 `.zip.sha256` 校验和、解压运行校验。三个包全部通过后创建 **draft release**，由维护者检查后发布；流程不覆盖已有发布或标签。
+
+维护者也可从 Actions 手动运行 `CLI release` 并填写匹配的标签名；手动运行仅上传验收产物，不创建发布或标签。此流程已提供，尚未通过真实标签发布来验收。下载 ZIP 后可使用上述校验器；包内 `SHA256SUMS` 覆盖二进制和 README，外部 `.zip.sha256` 覆盖整个下载文件。
+
 架构与切片设计见 [TDD 方案](plans/cli-review-and-tdd.md)，实施证据见 [集成记录](plans/tdd-integration.md)。
 
 ## 命令示例
@@ -84,6 +88,8 @@ sandflos diagnostics
 `diagnostics` 是离线命令，不读取网络，也不输出 token。JSON 模式下 `data` 包含版本、平台、配置目录、凭据存储类型、环境 token 是否生效，以及 Calibre/Zotero 的已配置摘要；路径中的用户主目录会替换为 `~`。它不需要 TTY，但会报告配置目录是否存在，不会为了诊断而创建目录。
 
 `--verbose` 在命令失败时向 stderr 追加一行稳定错误分类与退出码，stdout 的 JSON 对象不受影响。
+
+`reading stats --date` 的日期原样作为服务端统计参数传递，不随运行机器的时区换日。当前上游接口未声明统计时区，因此 JSON 明确返回 `timezone: null`，文本返回 `timezone=unspecified`；CLI 不将它解释为本地时间或 UTC。上游缺失的统计保持 `null`，不会补成零。
 
 `auth login --qr` 需要交互终端；JSON、重定向和 `--no-input` 模式请使用 token。环境中的 `SANDFLOS_TOKEN` 优先于磁盘凭据，在该变量生效时导入和扫码会被拒绝，避免新凭据被遮蔽。`auth logout` 只能清除 CLI 保存的凭据，不能撤销外部环境提供的 token。
 

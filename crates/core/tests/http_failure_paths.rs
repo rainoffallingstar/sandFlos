@@ -9,7 +9,7 @@
 //! the message record to be removed, while a failure after a successful
 //! remote delete must be reported as partial and unknown.
 
-use boox_core::api::{save_and_push_with_endpoints, ApiEndpoints};
+use boox_core::api::{fetch_user_me_at, save_and_push_with_endpoints, ApiEndpoints, ApiErrorKind};
 use boox_core::models::UploadAuthContext;
 use boox_core::services::{
     HttpQueueMutationBackend, HttpQueueReadBackend, QueueService, ServiceErrorKind,
@@ -193,6 +193,55 @@ fn auth() -> UploadAuthContext {
         storage_limit: None,
         storage_used: None,
     }
+}
+
+#[test]
+fn http_adapter_keeps_status_and_business_codes_distinct() {
+    let server = Loopback::with_routes(|method, path| match (method, path) {
+        ("GET", "/status/api/1/users/me") => Response::json(
+            "429 Too Many Requests",
+            r#"{"error":"private rate limit body"}"#,
+        ),
+        ("GET", "/api/1/users/me") => Response::json(
+            "200 OK",
+            r#"{"result_code":1001,"message":"private business detail","data":null}"#,
+        ),
+        ("GET", "/business-without-data/api/1/users/me") => Response::json(
+            "200 OK",
+            r#"{"result_code":1002,"message":"private missing-data detail"}"#,
+        ),
+        _ => Response::json("404 Not Found", r#"{"error":"unexpected route"}"#),
+    });
+    let client = boox_core::api::create_client(10).expect("client");
+
+    let protocol = fetch_user_me_at(&client, &server.endpoint, "fixture-token")
+        .expect_err("a nonzero business code is not a successful response");
+    assert_eq!(protocol.kind, ApiErrorKind::Business);
+    assert_eq!(protocol.status, Some(200));
+    assert_eq!(protocol.result_code, Some(1001));
+    assert!(!protocol.message.contains("private business detail"));
+    assert!(protocol.message.contains("1001"));
+
+    let no_data = fetch_user_me_at(
+        &client,
+        &format!("{}/business-without-data", server.endpoint),
+        "fixture-token",
+    )
+    .expect_err("a business failure without data must retain its result code");
+    assert_eq!(no_data.kind, ApiErrorKind::Business);
+    assert_eq!(no_data.result_code, Some(1002));
+    assert!(!no_data.message.contains("private missing-data detail"));
+
+    let transport = fetch_user_me_at(
+        &client,
+        &format!("{}/status", server.endpoint),
+        "fixture-token",
+    )
+    .expect_err("a rate limit is an HTTP failure");
+    assert_eq!(transport.kind, ApiErrorKind::HttpStatus);
+    assert_eq!(transport.status, Some(429));
+    assert_eq!(transport.result_code, None);
+    assert!(!transport.message.contains("private rate limit body"));
 }
 
 #[test]
@@ -835,4 +884,48 @@ fn queue_http_requests_honour_the_configured_timeout() {
         "a request exceeding the configured timeout must fail"
     );
     assert_eq!(result.unwrap_err().kind.exit_code(), 4);
+}
+
+#[test]
+fn success_envelopes_require_data_and_a_well_typed_result_code() {
+    for body in [
+        "{}",
+        "[]",
+        r#"{"result_code":0}"#,
+        r#"{"result_code":"401","data":{"uid":"fixture"}}"#,
+        r#"{"result_code":null,"data":null}"#,
+        r#"{"result_code":1.5,"data":null}"#,
+    ] {
+        let server = Loopback::with_routes(move |_, _| Response::json("200 OK", body));
+        let client = boox_core::api::create_client(1).unwrap();
+        let error = fetch_user_me_at(&client, &server.endpoint, "fixture-token")
+            .expect_err("a malformed envelope must never mean success");
+        assert_eq!(error.kind, ApiErrorKind::Protocol);
+    }
+}
+
+#[test]
+fn resend_preparation_keeps_http_rejection_type_and_performs_no_write() {
+    for rejected_path in [
+        "/api/1/config/buckets",
+        "/neocloud/doc-fixture",
+        "/api/1/config/stss",
+    ] {
+        let server = Loopback::with_routes(move |method, path| {
+            if method == "GET" && path == rejected_path {
+                return Response::json("401 Unauthorized", "upstream-secret");
+            }
+            push_fixture_routes(method, path)
+        });
+        let error = queue_mutation_service(&server.endpoint)
+            .resend("doc-fixture")
+            .unwrap_err();
+        assert_eq!(error.kind, ServiceErrorKind::Authentication);
+        assert_eq!(error.kind.exit_code(), 3);
+        assert!(!error.message.contains("upstream-secret"));
+        assert!(server
+            .requests()
+            .iter()
+            .all(|r| !r.request_line.starts_with("PUT ") && !r.request_line.starts_with("POST ")));
+    }
 }

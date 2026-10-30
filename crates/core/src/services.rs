@@ -11,7 +11,7 @@ use crate::api::{
     fetch_identity_for_token_with_endpoints, fetch_push_queue_for_dashboard_with_endpoints,
     fetch_read_time_info_with_endpoints, fetch_reading_info_with_endpoints,
     fetch_storage_with_endpoints, fetch_sts_for_auth_with_endpoints,
-    put_push_message_doc_with_endpoints, save_and_push_with_endpoints,
+    put_push_message_doc_with_endpoints, save_and_push_with_endpoints, ApiError, ApiErrorKind,
 };
 use crate::device::build_dashboard_devices;
 use crate::models::{BucketConfig, DashboardDevice, DashboardPushItem, OssSts, UploadAuthContext};
@@ -25,7 +25,9 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{
     fmt, fs,
+    io::{self, Read},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime},
 };
 use uuid::Uuid;
@@ -99,6 +101,15 @@ impl ServiceError {
 
     pub fn protocol(stage: &'static str, message: impl Into<String>) -> Self {
         Self::new(ServiceErrorKind::Protocol, "protocol_error", stage, message)
+    }
+
+    pub fn cancelled(stage: &'static str) -> Self {
+        Self::new(
+            ServiceErrorKind::Cancelled,
+            "cancelled",
+            stage,
+            "operation cancelled",
+        )
     }
 }
 
@@ -249,6 +260,12 @@ pub enum PushProgress {
 
 #[allow(clippy::too_many_arguments)]
 pub trait PushBackend {
+    /// Whether the caller has asked to stop. Backends that can observe a
+    /// signal should override this; the service also checks it between
+    /// phases so a batch never starts another file after cancellation.
+    fn cancellation_requested(&self) -> bool {
+        false
+    }
     fn auth_context(&mut self) -> ServiceResult<UploadAuthContext>;
     fn default_bucket(&mut self) -> ServiceResult<(String, BucketConfig)>;
     fn sts(&mut self, auth: &UploadAuthContext) -> ServiceResult<OssSts>;
@@ -572,6 +589,9 @@ impl<B: PushBackend> PushService<B> {
         }
 
         for (index, size) in valid {
+            if self.backend.cancellation_requested() {
+                break;
+            }
             let path = files[index].as_path();
             let display_name = results[index]
                 .as_ref()
@@ -672,6 +692,7 @@ impl<B: PushBackend> PushService<B> {
                             | ServiceErrorKind::Protocol
                             | ServiceErrorKind::Unknown
                             | ServiceErrorKind::Partial
+                            | ServiceErrorKind::Cancelled
                     ) {
                         PushOutcome::Unknown
                     } else {
@@ -723,9 +744,16 @@ impl<B: PushBackend> PushService<B> {
                 &rev,
             ) {
                 Ok(()) => {
+                    // The submission has completed successfully. Preserve
+                    // that acceptance even if cancellation arrived while the
+                    // call was returning; the batch stops before the next
+                    // file because the loop checks the flag at its top.
                     result.stage = PushStage::SaveAndPush;
                     result.outcome = PushOutcome::Accepted;
                     result.error = None;
+                    on_progress(PushProgress::Finished(result.clone()));
+                    results[index] = Some(result);
+                    continue;
                 }
                 Err(error) => {
                     result.stage = PushStage::SaveAndPush;
@@ -733,8 +761,31 @@ impl<B: PushBackend> PushService<B> {
                     result.error = Some(error);
                 }
             }
+            let cancelled = self.backend.cancellation_requested();
+            if cancelled {
+                // A completed submit is accepted; cancellation before the
+                // service records its result leaves the outcome unconfirmed.
+                result.outcome = PushOutcome::Unknown;
+                result.error = Some(ServiceError::cancelled("save_and_push"));
+            }
             on_progress(PushProgress::Finished(result.clone()));
             results[index] = Some(result);
+            if cancelled {
+                break;
+            }
+        }
+
+        if self.backend.cancellation_requested() {
+            for result in results.iter_mut().flatten() {
+                // Valid items that never started still have no error and no
+                // accepted outcome. Do not relabel files that already
+                // succeeded or failed before cancellation was observed.
+                if result.error.is_none() && result.outcome == PushOutcome::Failed {
+                    result.stage = PushStage::Prepare;
+                    result.error = Some(ServiceError::cancelled("cancelled"));
+                    on_progress(PushProgress::Finished(result.clone()));
+                }
+            }
         }
 
         finish_results(results)
@@ -914,6 +965,9 @@ pub struct StorageReading {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReadingStats {
     pub date: String,
+    /// The upstream endpoints do not declare a timezone. Preserve that
+    /// uncertainty rather than interpreting the request date as local or UTC.
+    pub timezone: Option<String>,
     pub reading_info: Value,
     pub week: Value,
     pub day: Value,
@@ -1018,16 +1072,8 @@ impl HttpPushBackend {
         self
     }
     fn check_cancelled(&self) -> ServiceResult<()> {
-        if self
-            .cancel_flag
-            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-        {
-            Err(ServiceError::new(
-                ServiceErrorKind::Cancelled,
-                "cancelled",
-                "request",
-                "operation cancelled",
-            ))
+        if self.cancellation_requested() {
+            Err(ServiceError::cancelled("request"))
         } else {
             Ok(())
         }
@@ -1047,13 +1093,41 @@ impl HttpPushBackend {
     }
 }
 
-fn classify(stage: &'static str, error: String) -> ServiceError {
-    if let Some(rest) = error.strip_prefix("HTTP ") {
-        let status = rest
-            .split_whitespace()
-            .next()
-            .and_then(|value| value.parse::<u16>().ok());
-        return match status {
+/// Reads an upload body while honouring the process cancellation flag.
+///
+/// reqwest reads a streaming body on its worker thread, so checking only
+/// between push phases would keep reading a large local file after SIGINT.
+/// Returning an interrupted I/O error aborts the body and lets the caller
+/// report `cancelled` instead of a generic transport failure.
+struct CancellableReader {
+    file: fs::File,
+    flag: &'static AtomicBool,
+}
+
+impl Read for CancellableReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.flag.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "operation cancelled",
+            ));
+        }
+        self.file.read(buffer)
+    }
+}
+
+fn classify(stage: &'static str, error: ApiError) -> ServiceError {
+    match error.kind {
+        ApiErrorKind::Input => ServiceError::input("input_error", stage, error.message),
+        ApiErrorKind::Authentication => ServiceError::new(
+            ServiceErrorKind::Authentication,
+            "missing_credentials",
+            stage,
+            "authentication is required",
+        ),
+        ApiErrorKind::Timeout => ServiceError::network(stage, "网络请求超时"),
+        ApiErrorKind::Network => ServiceError::network(stage, "网络请求失败"),
+        ApiErrorKind::HttpStatus => match error.status {
             Some(401) | Some(403) => ServiceError::new(
                 ServiceErrorKind::Authentication,
                 "credential_rejected",
@@ -1071,27 +1145,25 @@ fn classify(stage: &'static str, error: String) -> ServiceError {
             ),
             Some(code) => ServiceError::network(stage, format!("服务端返回 HTTP {code}")),
             None => ServiceError::protocol(stage, "服务端返回了无法识别的响应"),
-        };
-    }
-    let lower = error.to_ascii_lowercase();
-    if lower.contains("未登录") || lower.contains("token") && lower.contains("缺少") {
-        return ServiceError::new(
-            ServiceErrorKind::Authentication,
-            "missing_credentials",
+        },
+        ApiErrorKind::Business => ServiceError::new(
+            ServiceErrorKind::Protocol,
+            "business_error",
             stage,
-            "authentication is required",
-        );
+            error.message,
+        ),
+        ApiErrorKind::Protocol => {
+            ServiceError::protocol(stage, "服务端返回了无效响应或未能确认请求结果")
+        }
     }
-    if lower.contains("timeout") || lower.contains("timed out") {
-        return ServiceError::network(stage, "网络请求超时");
-    }
-    ServiceError::protocol(
-        stage,
-        "remote request failed or returned an invalid response",
-    )
 }
 
 impl PushBackend for HttpPushBackend {
+    fn cancellation_requested(&self) -> bool {
+        self.cancel_flag
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     fn auth_context(&mut self) -> ServiceResult<UploadAuthContext> {
         self.check_cancelled()?;
         self.auth()
@@ -1115,8 +1187,24 @@ impl PushBackend for HttpPushBackend {
         content_type: &str,
     ) -> ServiceResult<()> {
         self.check_cancelled()?;
+        let expiration = chrono::DateTime::parse_from_rfc3339(&sts.expiration).map_err(|_| {
+            ServiceError::new(
+                ServiceErrorKind::Protocol,
+                "invalid_sts_expiration",
+                "upload",
+                "storage credentials have an invalid expiration",
+            )
+        })?;
+        if expiration.timestamp_millis() <= chrono::Utc::now().timestamp_millis() {
+            return Err(ServiceError::new(
+                ServiceErrorKind::Protocol,
+                "sts_expired",
+                "upload",
+                "temporary storage credentials have expired; retry to request fresh credentials",
+            ));
+        }
         let (bucket_name, host) =
-            build_oss_host(bucket).map_err(|error| classify("upload", error))?;
+            build_oss_host(bucket).map_err(|error| ServiceError::protocol("upload", error))?;
         let canonical_resource = format!("/{bucket_name}/{object_key}");
         let date = httpdate::fmt_http_date(SystemTime::now());
         let string_to_sign = format!(
@@ -1124,7 +1212,7 @@ impl PushBackend for HttpPushBackend {
             sts.security_token
         );
         let signature = sign_oss(&sts.access_key_secret, &string_to_sign)
-            .map_err(|error| classify("upload", error))?;
+            .map_err(|error| ServiceError::protocol("upload", error))?;
         let authorization = format!("OSS {}:{}", sts.access_key_id, signature);
         let file_size = fs::metadata(path)
             .map_err(|error| {
@@ -1134,11 +1222,16 @@ impl PushBackend for HttpPushBackend {
         let file = fs::File::open(path).map_err(|error| {
             ServiceError::local_io("file_unreadable", "upload", error.to_string())
         })?;
-        let body = reqwest::blocking::Body::sized(file, file_size);
+        let body = match self.cancel_flag {
+            Some(flag) => {
+                reqwest::blocking::Body::sized(CancellableReader { file, flag }, file_size)
+            }
+            None => reqwest::blocking::Body::sized(file, file_size),
+        };
         let url = self
             .endpoints
             .oss_url(&format!("https://{host}/{object_key}"));
-        let response = self
+        let response = match self
             .client
             .put(&url)
             .header("Date", date)
@@ -1148,11 +1241,23 @@ impl PushBackend for HttpPushBackend {
             .header(AUTHORIZATION, authorization)
             .body(body)
             .send()
-            .map_err(|error| classify("upload", error.to_string()))?;
+        {
+            Ok(response) => response,
+            Err(_) if self.cancellation_requested() => {
+                return Err(ServiceError::cancelled("upload"));
+            }
+            Err(error) => return Err(classify("upload", error.into())),
+        };
+        if self.cancellation_requested() {
+            return Err(ServiceError::cancelled("upload"));
+        }
         if response.status().is_success() {
             Ok(())
         } else {
-            Err(classify("upload", format!("HTTP {}", response.status())))
+            Err(classify(
+                "upload",
+                ApiError::http(response.status().as_u16()),
+            ))
         }
     }
     fn signed_url(
@@ -1182,7 +1287,7 @@ impl PushBackend for HttpPushBackend {
         signed_url: &str,
     ) -> ServiceResult<(String, String)> {
         self.check_cancelled()?;
-        put_push_message_doc_with_endpoints(
+        let written = put_push_message_doc_with_endpoints(
             &self.endpoints,
             &self.client,
             auth,
@@ -1192,7 +1297,16 @@ impl PushBackend for HttpPushBackend {
             object_key,
             signed_url,
         )
-        .map_err(|error| classify("write_message", error))
+        .map_err(|error| classify("write_message", error));
+        match written {
+            Ok(_) if self.cancellation_requested() => {
+                // The write may already have committed even though its
+                // response arrived. Keep the message identity and report an
+                // unknown result instead of a definite failure.
+                Err(ServiceError::cancelled("write_message"))
+            }
+            other => other,
+        }
     }
     fn confirm_sync(
         &mut self,
@@ -1201,14 +1315,18 @@ impl PushBackend for HttpPushBackend {
         rev: &str,
     ) -> ServiceResult<()> {
         self.check_cancelled()?;
-        wait_for_remote_push_doc_ready_with_endpoints(
+        let confirmed = wait_for_remote_push_doc_ready_with_endpoints(
             &self.endpoints,
             &self.client,
             auth,
             doc_id,
             rev,
         )
-        .map_err(|error| classify("confirm_sync", error))
+        .map_err(|error| classify("confirm_sync", error));
+        if self.cancellation_requested() {
+            return Err(ServiceError::cancelled("confirm_sync"));
+        }
+        confirmed
     }
     fn save_and_push(
         &mut self,
@@ -1221,7 +1339,7 @@ impl PushBackend for HttpPushBackend {
         rev: &str,
     ) -> ServiceResult<()> {
         self.check_cancelled()?;
-        save_and_push_with_endpoints(
+        let submitted = save_and_push_with_endpoints(
             &self.endpoints,
             &self.client,
             auth,
@@ -1233,7 +1351,13 @@ impl PushBackend for HttpPushBackend {
             rev,
         )
         .map(|_| ())
-        .map_err(|error| classify("save_and_push", error))
+        .map_err(|error| classify("save_and_push", error));
+        if self.cancellation_requested() {
+            // A cancellation after submission began cannot prove that the
+            // server rejected it. The service reports unknown for this stage.
+            return Err(ServiceError::cancelled("save_and_push"));
+        }
+        submitted
     }
 }
 
@@ -1348,8 +1472,11 @@ impl QueueMutationBackend for HttpQueueMutationBackend {
         self.check_cancelled()?;
         crate::push::push_resend_with_auth_with_endpoints(&self.endpoints, &self.client, auth, id)
             .map_err(|error| {
-                let submitted = matches!(&error, crate::push::ResendError::AfterSubmission(_));
-                let mut classified = classify("queue.resend", error.to_string());
+                let (submitted, error) = match error {
+                    crate::push::ResendError::BeforeSubmission(error) => (false, error),
+                    crate::push::ResendError::AfterSubmission(error) => (true, error),
+                };
+                let mut classified = classify("queue.resend", error);
                 if submitted
                     && matches!(
                         classified.kind,
@@ -1453,6 +1580,7 @@ impl QueryBackend for HttpQueryBackend {
                 .map_err(|e| classify("reading", e))?;
         Ok(ReadingStats {
             date: date.to_string(),
+            timezone: None,
             reading_info,
             week,
             day,
@@ -1986,6 +2114,7 @@ mod tests {
             self.calls.borrow_mut().push("reading".into());
             Ok(ReadingStats {
                 date: date.into(),
+                timezone: None,
                 reading_info: json!({}),
                 week: json!({}),
                 day: json!({}),
@@ -1995,7 +2124,7 @@ mod tests {
 
     #[test]
     fn queue_not_found_is_classified_for_idempotent_delete() {
-        let error = classify("queue.delete", "HTTP 404 Not Found: gone".to_string());
+        let error = classify("queue.delete", ApiError::http(404));
         assert_eq!(error.kind, ServiceErrorKind::NotFound);
         assert_eq!(error.code, "not_found");
     }

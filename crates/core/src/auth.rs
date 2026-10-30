@@ -409,7 +409,7 @@ fn login_request_from_params(
 fn handle_send_code_request(params: &HashMap<String, String>) -> Result<(), String> {
     let payload = verify_code_request_from_params(params)?;
     let client = create_client(20)?;
-    send_verify_code(&client, &payload)
+    send_verify_code(&client, &payload).map_err(|error| error.to_string())
 }
 
 fn handle_phone_or_email_login(params: &HashMap<String, String>) -> Result<(), String> {

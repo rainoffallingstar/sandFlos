@@ -77,7 +77,7 @@ pub fn build_dashboard_snapshot() -> DashboardSnapshot {
 
     let (auth, user) = match fetch_auth_context_and_user(&client) {
         Ok(value) => value,
-        Err(err) => return unauthorized_dashboard_snapshot(err),
+        Err(err) => return unauthorized_dashboard_snapshot(err.to_string()),
     };
 
     let storage_value = fetch_storage(&client, &auth.bearer).unwrap_or(serde_json::Value::Null);

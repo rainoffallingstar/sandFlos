@@ -12,6 +12,7 @@
 - 队列重推和删除不盲目重试。删除要求显式确认；远端文档 404 与消息记录 404 均按幂等成功处理；第二步失败返回结构化部分完成/未知结果，CLI 以 6 退出，保留 `complete=false` 数据。
 - `QueryService` 的设备、存储、阅读统计分别调用，设备列表不触发阅读指标查询；日期在请求前严格校验为真实存在的 `YYYY-MM-DD`。
 - HTTP 适配器位于服务边界之外。401/403 映射认证错误，404 在队列操作中映射为 `NotFound`，网络超时映射网络错误，其余服务端故障不把响应正文当作稳定业务码。
+- 取消在 OSS 流式读取期间生效：上传体通过可取消 reader 读取，SIGINT 会中断本地文件读取并停止后续消息写入。批次在下一个文件开始前检查取消；已验证完成的文件保留原有结果。写入消息或 `saveAndPush` 开始后取消时，结果按 `unknown` 保留消息 ID，不冒充回滚或确定失败。
 
 ## 本次收尾的 Red/Green 与回归
 
@@ -33,11 +34,12 @@ cargo test --locked -p sandflos-cli --bin sandflos
 - 完整 `cargo test --locked -p boox-core -p sandflos-cli` 中，core unit、书库集成、CLI auth/process/push-queue 均通过；具体总数以最终集成记录为准。
 - `cargo clippy --locked -p boox-core -p sandflos-cli --all-targets -- -D warnings`：通过。
 - `cargo fmt -p boox-core -p sandflos-cli -- --check`：通过。
-- `bash scripts/check_cli.sh`：覆盖 fmt、两 crate 测试、CLI lint、release 构建、依赖闭包和隐藏显示环境 smoke；最终结果由集成记录统一填写。
+- `bash scripts/check_cli.sh`：覆盖 fmt、两 crate 测试、CLI lint、release 构建、依赖闭包和隐藏显示环境 smoke；取消切片补齐后该命令再次通过。
+- 取消回归：`cancelled_upload_stops_the_batch_before_any_message_write`、`cancellation_after_the_first_file_keeps_that_acceptance`、`cancellation_after_message_creation_is_unknown_with_the_message_id`（S2）；`sigint_during_upload_exits_130_without_creating_a_message`（S1/S3，真实子进程 SIGINT、慢速回环 OSS）。
 
 ## 未验证边界
 
 - 没有访问真实 BOOX 账号、OSS、neocloud、设备或生产队列；没有执行真实推送、重推或删除。
-- 没有做 200 MiB 文件的真实网络传输、慢链路、连接中断或取消 smoke；测试验证了边界拒绝和流式请求构造，不证明实际吞吐。
+- 没有做 200 MiB 文件的真实网络传输、慢链路或真实连接中断 smoke；取消使用回环慢速夹具和真实 SIGINT 验证，不证明生产链路的实际吞吐。
 - HTTP 适配器没有用真实协议样本验证所有业务码、429/5xx 重试语义和响应丢失后的幂等性。未知结果要求先查队列再决定重推。
 - macOS/Windows 的凭据后端、防火墙和设备发现未在本机验证。

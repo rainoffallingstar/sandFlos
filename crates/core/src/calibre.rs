@@ -480,6 +480,11 @@ pub(crate) fn list_books_at(
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .map_err(|_| "cannot open Calibre database")?;
+    // Calibre may hold an exclusive write lock while updating its metadata.
+    // Read-only commands should report the conflict promptly instead of
+    // blocking the CLI behind SQLite's multi-second default busy timeout.
+    conn.busy_timeout(std::time::Duration::from_millis(500))
+        .map_err(|_| "cannot configure Calibre database timeout")?;
     let rows = if let Some(limit) = limit.filter(|value| *value > 0) {
         let mut stmt = conn
             .prepare(

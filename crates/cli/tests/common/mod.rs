@@ -274,6 +274,12 @@ pub enum ApiFault {
     DeleteMessageFails,
     /// Accept the file but fail `saveAndPush`, leaving the outcome unknown.
     SaveAndPushFails,
+    /// The reading endpoints explicitly report unavailable data.
+    MissingReadingData,
+    /// A synchronization response echoes secret material in its revision.
+    SyncRevisionSecret,
+    /// Consume every upload byte but lose the HTTP acknowledgment.
+    UploadResponseLost,
 }
 
 pub struct ApiServer {
@@ -349,6 +355,9 @@ impl ApiServer {
                         continue;
                     }
                 }
+                let lose_upload_response = fault == ApiFault::UploadResponseLost
+                    && method == "PUT"
+                    && path.starts_with("/uid-fixture/push/");
                 observed
                     .lock()
                     .expect("API requests")
@@ -358,6 +367,10 @@ impl ApiServer {
                         headers,
                         body: String::from_utf8_lossy(&body).into_owned(),
                     });
+
+                if lose_upload_response {
+                    continue;
+                }
 
                 let (status, extra_headers, body) = api_fixture_response(
                     observed
@@ -412,6 +425,31 @@ fn api_fixture_response(
 ) -> (&'static str, Vec<&'static str>, String) {
     let path = request.path.split('?').next().unwrap_or_default();
     match (fault, request.method.as_str(), path) {
+        (ApiFault::SyncRevisionSecret, "GET", path) if path.starts_with("/neocloud/") => {
+            return (
+                "200 OK",
+                Vec::new(),
+                serde_json::json!({
+                    "_id": path.trim_start_matches("/neocloud/"),
+                    "_rev": "upstream-secret-signature=fixture",
+                    "storageKey": "uid-fixture/push/fixture.pdf",
+                })
+                .to_string(),
+            );
+        }
+        (
+            ApiFault::MissingReadingData,
+            "GET",
+            "/api/1/statistics/readingInfo"
+            | "/api/1/statistics/readTimeInfo"
+            | "/api/1/statistics/dayRead",
+        ) => {
+            return (
+                "200 OK",
+                Vec::new(),
+                r#"{"result_code":0,"data":null}"#.into(),
+            );
+        }
         (ApiFault::CredentialRejected, "GET", "/api/1/users/me") => {
             return (
                 "401 Unauthorized",

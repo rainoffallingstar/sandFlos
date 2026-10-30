@@ -30,11 +30,14 @@ pub fn run(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     }
     let bytes = fs::read(&source)
         .map_err(|_| CliError::new(CliErrorCode::LocalIo, "cannot read migration source"))?;
-    let legacy: boox_core::PersistedAuthState = serde_json::from_slice(&bytes)
-        .map_err(|_| CliError::new(CliErrorCode::LocalIo, "invalid legacy auth configuration"))?;
-    let token = legacy
-        .token
-        .ok_or_else(|| CliError::usage("legacy configuration has no token"))?;
+    let legacy: boox_core::PersistedAuthState = serde_json::from_slice(&bytes).map_err(|_| {
+        CliError::new(CliErrorCode::LocalIo, "invalid legacy auth configuration")
+            .with_stable_code("invalid_migration_source")
+    })?;
+    let token = legacy.token.ok_or_else(|| {
+        CliError::usage("legacy configuration has no token")
+            .with_stable_code("migration_source_missing_token")
+    })?;
     let status = service.import_token(&token).map_err(CliError::from_auth)?;
     crate::output::emit_success(
         options.json,

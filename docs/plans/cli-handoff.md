@@ -10,7 +10,7 @@ M1/M2 命令入口与独立 CLI 已实现。本轮补齐真实 HTTP 回环协议
 
 - 帮助、版本、诊断、显式配置迁移；离线启动不创建配置目录。
 - token 导入/状态/验证/退出、交互终端二维码；独立配置目录，环境 token 优先，平台凭据或显式文件存储。
-- 本地文件推送及逐文件报告，流式 OSS body，单文件 200 MiB 与配额前置检查。
+- 本地文件推送及逐文件报告，流式 OSS body，单文件 200 MiB 与配额前置检查。SIGINT 可中断上传读取并停止批次；提交开始后取消按 unknown 保留消息 ID。
 - 队列列表、重推、显式 `--yes` 删除；设备列表/互传地址、空间、阅读统计。
 - Calibre 配置/状态/列表/按 data-id 推送；Zotero 显式目录、列表、本地附件/WebDAV 与统一推送。
 
@@ -68,7 +68,7 @@ Linux 默认无可用凭据后端时，应使用 `SANDFLOS_TOKEN` 或显式 `SAN
 
 - macOS Keychain、Windows Credential Manager 的真实写入/读取和 Windows ACL；终端二维码可扫码性。
 - 真实 BOOX/OSS/neocloud 账号、上游业务码及设备接收。云端接受与设备收到分别记录，不提交凭据和签名 URL。
-- 200 MiB 文件的实际内存/吞吐、慢链路、连接中断与取消 smoke；自动测试目前证明边界拒绝和流式 body，不能替代性能验收。
+- 200 MiB 文件的实际内存/吞吐、真实慢链路与真实连接中断；取消已用回环慢速 OSS 和真实子进程 SIGINT 验证，但仍不能替代生产链路性能验收。
 - 桌面人工回归；macOS CI 仅执行桌面 `cargo check`。
 - `create_client_with_base_url` 仍是仅校验 URL 再创建客户端的旧 helper，命名可后续整理；真实认证请求通过 `_at` 接口指定 origin。
 - `zotero detect` 明确返回不支持，使用显式目录；不应未经跨平台验证改成自动探测。

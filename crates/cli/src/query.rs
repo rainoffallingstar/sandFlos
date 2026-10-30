@@ -125,6 +125,10 @@ fn reading(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
         emit_json(serde_json::to_value(&stats).map_err(serialization_error)?)?;
     } else {
         println!("date={}", stats.date);
+        println!(
+            "timezone={}",
+            stats.timezone.as_deref().unwrap_or("unspecified")
+        );
         println!("reading_info={}", stats.reading_info);
         println!("week={}", stats.week);
         println!("day={}", stats.day);
