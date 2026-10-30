@@ -23,3 +23,5 @@ The async cancellation boundary has sound drop ordering: the request future is p
 5. Fixed: benchmark stdout/stderr go to temporary files, preventing pipe backpressure; fixture diagnostics use the same state lock. A finally block kills/reaps the child on interruption. Only the CLI child is sampled, as documented.
 
 No hard documented-standard violation remained. These judgement dispositions do not imply broader architecture migration is complete.
+
+Parent integration followup: the stalled fixture previously used one read() for its prefix but required at least 4 KiB in the test. TCP may split that prefix across reads. It now read_exacts the bounded 8 KiB prefix (within the existing socket timeout) before stalling; the cancellation and request assertions remain unchanged. This is fixture reliability, not a new production behavior Red.

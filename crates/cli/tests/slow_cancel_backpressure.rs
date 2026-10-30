@@ -187,19 +187,18 @@ impl Drop for SlowUploadFixture {
 
 fn stall_after_upload_prefix(
     reader: &mut BufReader<TcpStream>,
-    _content_length: usize,
+    content_length: usize,
     body_bytes: &AtomicUsize,
     stop: &AtomicBool,
     limit: Duration,
 ) {
     let deadline = Instant::now() + limit;
     let mut first = [0u8; 8192];
-    match reader.read(&mut first) {
-        Ok(n) => {
-            body_bytes.fetch_add(n, Ordering::SeqCst);
-        }
-        Err(_) => return,
+    let prefix_len = content_length.min(first.len());
+    if reader.read_exact(&mut first[..prefix_len]).is_err() {
+        return;
     }
+    body_bytes.fetch_add(prefix_len, Ordering::SeqCst);
     // Leave the remaining body unread so the client's HTTP and kernel send
     // buffers fill. The explicit content length identifies the request even
     // though this fixture deliberately never consumes the complete body.
