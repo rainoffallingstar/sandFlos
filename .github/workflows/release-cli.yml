@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'CLI tag to validate and package (manual runs never create a release)'
+        description: 'Expected version tag of the selected ref; no tag or release is created manually'
         required: true
         type: string
 permissions:
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: Require tag to match the CLI manifest
+      - name: Require expected tag to match the checked-out CLI manifest
         shell: bash
         run: python3 scripts/release_cli.py check-tag --tag "$CLI_TAG"
       - uses: dtolnay/rust-toolchain@stable

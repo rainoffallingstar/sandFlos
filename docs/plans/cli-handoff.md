@@ -1,83 +1,66 @@
 # CLI 改造交班记录
 
-更新：2026-10-30。仓库 `/home/fallingstar10/shire/sandFlos`，目标分支 `cli`。本轮从已推送的 `3d79aef` 继续；打包切片为 `a7b7e35`，业务集成为 `87cf039`，跨平台夹具修复为 `25aeab2`。最终验收提交 `49117e69a8246a78eb80f14908046b09ed505eaa` 已推送到 `origin/cli`，CI run `40978370161` 已 7/7 全部通过。后续文档提交不改变这份已验收代码。
+更新：2026-10-30。仓库 `/home/fallingstar10/shire/sandFlos`，分支 `cli`。本轮从 `4d6a48a139851c7f169ed83bd0e1055031d86587` 继续，按原方案及已确认的 S1–S4 由 DeepSeek V4.1 Flash（high）子 agent 实施，父 agent 串联、集成与审查。
 
-## 进度
+本轮本机最终检查已通过；最终代码提交与远端 CI 将在本轮推送后补入本节。`7c2e4fc` 是包含类型化错误、边界与发布基础实现的中间提交，不能单独当作最终验收。此前已验证代码为 `49117e6`，旧 CI run `40978370161` 的 7/7 成功只证明此前版本，不证明本轮改动。
 
-M1/M2 命令入口与独立 CLI 已实现。本轮补齐真实 HTTP 回环协议、真实二进制进程、书库选书推送和下载产物验收，并修复测试暴露的失败语义。尚未进行真实账号、扫码和设备接收验收，不能将合成协议夹具视为生产服务验收。
+## 当前功能与本轮补齐
 
-已有命令：
+M1/M2 的命令已实现：认证、独立配置、JSON/退出码、本地推送、队列、设备/空间/阅读统计、Calibre、Zotero/WebDAV、迁移与诊断。完整命令见 `docs/cli.md`；逐项完成状态与未验收项见 `cli-plan-status.md`。
 
-- 帮助、版本、诊断、显式配置迁移；离线启动不创建配置目录。
-- token 导入/状态/验证/退出、交互终端二维码；独立配置目录，环境 token 优先，平台凭据或显式文件存储。
-- 本地文件推送及逐文件报告，流式 OSS body，单文件 200 MiB 与配额前置检查。SIGINT 可中断上传读取并停止批次；提交开始后取消按 unknown 保留消息 ID。
-- 队列列表、重推、显式 `--yes` 删除；设备列表/互传地址、空间、阅读统计。
-- Calibre 配置/状态/列表/按 data-id 推送；Zotero 显式目录、列表、本地附件/WebDAV 与统一推送。
+本轮重点：
 
-## 本轮审查已修复（不要回退）
+- HTTP 改为类型化错误，保留状态/业务码；错误不带原始响应体或 URL。401/403、429/5xx、业务错误、损坏信封与响应体截断保持正确类别。成功信封必须存在 data；队列必须有 results 数组，不能用空队列吞掉无效响应。
+- 重推准备阶段保留认证错误；消息写入、同步和提交不明保留 unknown 与已知身份；非幂等写入只提交一次。同步 revision 不再进入错误文本。
+- 过期 STS 在建立上传连接前拒绝；实际 OSS PUT 内容/长度与确认丢失都有验收。上传进度只在 OSS 确认后发出一次，不把读完文件当作远端接受。
+- SIGINT 使用可取消 reader；预检、阶段和批次检查同一取消信号。消息响应已到时保留 id/rev；最终提交已确认则保留 accepted，未确认才 unknown；后续文件不启动。真实子进程测试覆盖 8 MiB 慢上传和 saveAndPush 响应丢失，退出 130。
+- 凭据锁冲突、注销失败、Windows 实际替换失败、跨年日期/不同时区/null 统计、QR 缺 token/拒绝/超时/取消/断网均有边界验收。Windows 专属替换用例由 Windows CI 执行，Linux 不将它记作已跑。
+- Calibre 多库同 ID、全局分页/搜索、完整必需表列校验、500 ms 锁等待、损坏数据库与源字节不变；Zotero 本地/WebDAV、404、凭据不可读、ZIP 损坏/展开超限/符号链接与清理；迁移失败修正后由新进程验证凭据仍可用。
+- 固定 Rust 1.97.1；新增独立 cli-v* 发布 workflow、版本化 ZIP 与外部 SHA-256。普通 CLI 三平台 CI 也构建并运行版本化 ZIP，无需创建真实标签。
 
-- 核心端点通过 `ApiEndpoints` 显式传入，不读取测试环境变量。CLI API-only 测试地址默认同源 OSS；孤立 OSS、非法 origin、非 Unicode 设置明确退出 2，不能回退线上。认证地址采用同一限制。
-- `saveAndPush` 与重推写入仅提交一次；重推 502 实际 Red 曾记录到 4 次写入，现在返回 unknown / 退出 6。
-- 写消息响应失败保留 unknown 与 resource key；同步未确认或最终提交失败保留消息 ID；不能报告成功。
-- 上传配额接口失败立即停止；只读查询/队列只解析身份，不依赖额外统计请求。
-- 重推父消息 404 后重建保留原格式，EPUB 不再变为 PDF。
-- 队列保留两步删除结果、404 幂等和部分完成；凭据存储错误保持退出 5，变更后端接入取消标记。
-- neocloud 不再创建固定 20 秒的隐藏客户端；复用 CLI 客户端，使 `--timeout` 对这类请求生效，路径范围 Cookie 仍保留。
-- 日期格式/合法性先于凭据解析；无账号的非法日期仍退出 2。
-- WebDAV ZIP 只接受数据库指定附件；含空格密码可持久化，旧密码配置兼容。Base64 仅做格式适配，保护仍取决于凭据后端。
-- 打包验证严格检查二进制、README、SHA256SUMS 与权限，拒绝多余文件、危险 ZIP、符号链接；`--force` 拒绝覆盖无关文件或输入目录。
+此前依赖隔离、显式回环端点、权限受限文件凭据、原子替换、队列两步删除、WebDAV 路径/大小限制和临时文件清理继续保留。
 
-此前的凭据原子替换、配置锁、HTTP 输出脱敏、WebDAV 大小/路径限制与临时文件清理保留。
+## 最新本机验收
 
-## 验证
-
-最新提交的本机 Linux 统一检查通过：158 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release 构建、桌面依赖隔离、无显示 smoke、打包与运行验证全部通过。
-
-审查补齐 T11 组合验收：新增两项真实 CLI 的 WebDAV 下载后推送测试，覆盖成功与最终提交未知；核对 OSS 上传字节、报告中的附件与临时父目录清理、源数据库不变。对应 `library_push_e2e` 共 4 项通过；属于已有实现的新增组合回归，未改生产逻辑。详细证据见 `cli-libraries-execution.md`。
-
-最终 CI run `40978370161` 在提交 `49117e6` 上完成，7 项任务全部通过：Linux/macOS/Windows 的 `cli` 检查、三平台 `verify-package` 下载压缩包后验证并运行，以及 macOS `desktop-compatibility` 编译。Windows 跳过两项 Unix 专属 Rust 测试；Python 的 POSIX shell 正常夹具由对应平台的原生 release 包验收补充。此前夹具修复提交 `25aeab2` 的 run `40976698508` 也已 7/7 通过。
+Linux 执行：
 
 ```bash
-bash scripts/check_cli.sh
+CARGO_NET_OFFLINE=true bash scripts/check_cli.sh
 ```
 
-该脚本包含 Python 进程测试、Rust 测试、fmt、严格 clippy、release、依赖闭包、无显示启动与本地产物验证。HTTP 测试使用真实适配器和回环 TCP；CLI 测试运行真实子进程；SQLite 使用临时真实数据库。
+结果：**196 项 Rust 测试、7 项 Python 进程测试，0 失败**；fmt、严格 clippy、release 构建、CLI normal 依赖闭包、无显示启动、打包与原生二进制运行均通过。随后用本次新构建的二进制生成版本化原生 ZIP，并通过同一消费端校验器。临时日志 `/tmp/sandflos-cli-final-check.log` 不属于交付产物。
 
-交班基线 `3d79aef` 的 121 项 Rust 测试与三平台 CLI CI、macOS 桌面编译已通过，基线 run 为 `40963914110`。本轮新增下载验收的证据为上述最终 run。
+统一检查首轮的 Rust/Python 测试已全绿，但 clippy 指出新 SIGINT fixture 的嵌套 if；合并等价条件后完整重跑通过。此 lint 整理不是 TDD Red。
 
-收尾时实际处理过间歇 CI 失败：run `40974612627` 的 Windows 认证、`40975499550` 的 Windows 查询和 `40975963627` 的 macOS 重推测试在请求阶段提前失败。回环夹具的 listener 使用非阻塞模式，接受的连接却未显式切回阻塞模式；最终提交统一连接模式和读写超时，WebDAV 夹具读取完整请求头。测试断言未放宽。这是跨平台夹具修复，不冒充新增业务功能的 TDD Red/Green。失败日志摘要现按片段写入检查注解，避免 GitHub 注解截断。
+测试使用合成凭据和回环 HTTP、真实 CLI 子进程、临时真实 SQLite；没有访问真实账号、设备、用户书库或平台 keyring。真实 SIGINT 用例限 Unix，Linux 另观察子进程读取计数；Windows 由专属文件句柄替换测试补其平台边界。
 
-Linux 默认无可用凭据后端时，应使用 `SANDFLOS_TOKEN` 或显式 `SANDFLOS_CREDENTIAL_STORE=file`；不要静默降级明文存储。
+## 审查与证据
 
-## 关键文件与证据
+- `cli-review-followup.md`：规范轴与方案轴分别报告、逐项处置；包含队列空结果误判、Calibre 表结构碰撞、成功确认被取消覆盖和预检取消优先级的修复。
+- `tdd-http-errors.md`：类型化 HTTP、信封、队列结构、重推分类、STS 到期的实际 Red/Green。
+- `tdd-transfer.md`：取消后的已知消息 ID、真实上传/提交 SIGINT、预检；记录 64 MiB 慢链路实验的限制。
+- `tdd-boundaries.md`：书库、WebDAV 与迁移；父 agent 对 Calibre 必需列的追加修复。
+- `tdd-calendar-storage.md`：日期、凭据持久化失败与 QR 失败路径。
+- `tdd-output-secrets.md`：同步错误脱敏、上传确认丢失与公共进度契约。
+- `tdd-release.md`：独立 CLI 发布、工具链和归档验收。
 
-| 位置 | 内容 |
-| --- | --- |
-| `docs/cli.md` | 安装、命令、配置与退出码 |
-| `crates/core/src/services.rs` | 公共推送/队列/查询服务与 HTTP 适配器 |
-| `crates/core/src/api.rs`、`push.rs` | 显式端点、消息协议与提交语义 |
-| `crates/cli/src/auth.rs`、`queue.rs`、`query.rs` | 进程配置、错误映射与参数优先级 |
-| `crates/core/tests/http_failure_paths.rs` | 真实 HTTP 协议与失败分类 |
-| `crates/cli/tests/query_queue_e2e.rs`、`failure_paths.rs`、`query_validation.rs` | 进程成功/失败/输入契约 |
-| `crates/cli/tests/library_push_e2e.rs` | 真实 SQLite 选中格式及 WebDAV 下载进入 OSS，确认数据库不变、成功/unknown 后清理 |
-| `scripts/check_cli.sh`、`package_cli.py`、`verify_cli_package.py` | 统一检查、打包、下载后执行 |
-| `tdd-http.md`、`cli-libraries-execution.md` | 实际 Red/Green 与回归测试的区别 |
-| `tdd-integration.md`、`cli-artifact-verification.md` | 集成与产物证据 |
+已有实现新增测试首次直接 Green 时明确记录为回归；不补造 Red 历史，也不将编译/下载错误计为行为 Red。早期证据继续见 `tdd-http.md`、`cli-libraries-execution.md`、`cli-artifact-verification.md`；旧数量不替代本节最终数量。
 
-## 剩余验收与已知限制
+## 尚未完成的验收与架构债务
 
-- macOS Keychain、Windows Credential Manager 的真实写入/读取和 Windows ACL；终端二维码可扫码性。
-- 真实 BOOX/OSS/neocloud 账号、上游业务码及设备接收。云端接受与设备收到分别记录，不提交凭据和签名 URL。
-- 200 MiB 文件的实际内存/吞吐、真实慢链路与真实连接中断；取消已用回环慢速 OSS 和真实子进程 SIGINT 验证，但仍不能替代生产链路性能验收。
-- 桌面人工回归；macOS CI 仅执行桌面 `cargo check`。
-- `create_client_with_base_url` 仍是仅校验 URL 再创建客户端的旧 helper，命名可后续整理；真实认证请求通过 `_at` 接口指定 origin。
-- `zotero detect` 明确返回不支持，使用显式目录；不应未经跨平台验证改成自动探测。
-- `--timeout` 是请求级超时，包含 neocloud；读操作轮询可能发生多次请求，不表示整条命令的统一截止时间。
+1. macOS Keychain、Windows Credential Manager 的真实写读、Windows ACL、终端二维码手机扫码。
+2. 生产 BOOX/OSS/neocloud、真实 WebDAV、上游业务码及设备实际接收。CLI 的 accepted 表示云端接受，不能声称设备已收到。
+3. 200 MiB 峰值内存/吞吐与生产慢链路。64 MiB 慢回环实验曾暴露 socket 写背压；v1 取消依赖 reader、阶段检查与有限请求超时，不能保证瞬间打断已阻塞的系统调用。8 MiB 测试不是大文件性能结论。
+4. 桌面人工回归；macOS CI 只执行桌面 cargo check。
+5. 真实 cli-v* tag 事件到 draft release 的完整链路。本轮不创建 tag、不发布 release；普通 CI 验证三平台归档脚本与原生产物。
+6. 上游统计时区尚未确认，明确输出 timezone:null。请求日期不因本机时区转换，缺失统计保留 null。
+7. CLI 已独立于桌面状态，桌面兼容入口仍保留 core 全局状态；原设计“最终由 app 持有状态”的全面迁移尚未完成。
+
+上传进度 v1 为阶段/OSS 确认事件，没有连续百分比；zotero detect 明确不支持，使用显式目录；--timeout 是单次请求超时，读操作轮询可能有多次请求。无可用 keyring 的服务器用 SANDFLOS_TOKEN 或显式 SANDFLOS_CREDENTIAL_STORE=file，不静默明文降级。
 
 ## 下一位 agent
 
-1. 先 `git status`、`git log -5 --oneline`，保留工作区改动；不要假设交班时必然干净，不要覆盖已有实现。
-2. 读取本文件与 `tdd-http.md`，只复跑需要的统一检查，不重做已完成切片。
-3. 已验收代码为 `49117e6`、run `40978370161`（7/7 通过）；若有后续代码变更，再查看对应新 run，不重复修复已处理的 CI 夹具或 WebDAV 组合验收问题。
-4. 真实账号与平台人工 smoke 单独记录。HTTP 夹具为合成数据，不夸大为生产协议已全量验证。
-5. 新修复继续在 S1–S4 公共边界做 Red/Green；不要把并行编译错误计入 TDD Red。
+1. 先检查 git status/log，保留工作区；以本文件最终代码 SHA 和 CI run 为准，不重复引用旧 run。
+2. 读 cli-plan-status.md 和相关切片记录，区分已完成自动化与上述人工/架构事项。
+3. 新修复继续走已确认 S1–S4 的真实 Red/Green；已有行为回归直接 Green 诚实记录。
+4. 不使用用户真实账号或书库作为日常 fixture，不把实际发布标签当测试资源。若改代码，运行适当检查并等待新提交对应 CI。

@@ -1,7 +1,7 @@
 use crate::args::GlobalOptions;
 use crate::error::{CliError, CliErrorCode};
 use boox_core::services::{
-    validate_local_push_files, HttpPushBackend, PushProgress, PushReport, PushService,
+    validate_local_push_files_with_cancel, HttpPushBackend, PushProgress, PushReport, PushService,
 };
 use std::{path::PathBuf, time::Duration};
 
@@ -26,7 +26,7 @@ pub fn run(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 
 /// Run the shared upload/push pipeline for files selected by another command.
 pub fn push_paths(options: &GlobalOptions, files: &[PathBuf]) -> Result<(), CliError> {
-    if let Some(report) = validate_local_push_files(files) {
+    if let Some(report) = validate_local_push_files_with_cancel(files, crate::cancel::requested) {
         return finish_report(options, &report);
     }
 

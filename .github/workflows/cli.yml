@@ -51,10 +51,25 @@ jobs:
       - name: Package standalone binary
         shell: bash
         run: python3 scripts/package_cli.py
+      - name: Validate the native versioned release archive
+        shell: bash
+        run: |
+          cli_version="$(python3 -c 'import tomllib; print(tomllib.load(open("crates/cli/Cargo.toml", "rb"))["package"]["version"])')"
+          native_target="$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')"
+          python3 scripts/release_cli.py archive --tag "cli-v${cli_version}" \
+            --target "$native_target" --package target/cli-package --output-dir release-assets
+          for archive in release-assets/*.zip; do
+            python3 scripts/verify_cli_package.py "$archive"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: sandflos-${{ matrix.os }}
           path: cli-package/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sandflos-release-archive-${{ matrix.os }}
+          path: release-assets/*
           if-no-files-found: error
   verify-package:
     needs: cli

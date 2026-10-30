@@ -3,6 +3,49 @@ mod common;
 use common::{command_with_api, json_stdout, stderr, stdout, ApiFault, ApiServer, TestDir};
 
 #[test]
+fn upload_progress_is_bounded_and_requires_an_oss_acknowledgment() {
+    use boox_core::services::{HttpPushBackend, PushProgress, PushService};
+    use std::time::Duration;
+    for (fault, expected_upload_events) in [(ApiFault::UploadResponseLost, 0), (ApiFault::None, 1)]
+    {
+        let dir = TestDir::new();
+        let server = ApiServer::start_with_fault(fault);
+        let file = dir.path().join("progress.pdf");
+        std::fs::write(&file, b"fixture-book").unwrap();
+        let backend = HttpPushBackend::with_test_endpoints(
+            Duration::from_secs(2),
+            "fixture-token",
+            server.endpoint(),
+            server.endpoint(),
+        )
+        .unwrap();
+        let mut uploaded = Vec::new();
+        let report = PushService::new(backend).push_files(&[file], |event| {
+            if let PushProgress::Uploaded {
+                bytes, total_bytes, ..
+            } = event
+            {
+                uploaded.push((bytes, total_bytes));
+            }
+        });
+        assert_eq!(uploaded.len(), expected_upload_events);
+        for (bytes, total) in uploaded {
+            assert_eq!(total, 12);
+            assert_eq!(bytes, 12);
+            assert!(bytes <= total);
+        }
+        assert_eq!(report.accepted, expected_upload_events);
+        let requests = server.requests();
+        let uploads: Vec<_> = requests
+            .iter()
+            .filter(|r| r.method == "PUT" && r.path.starts_with("/uid-fixture/push/"))
+            .collect();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].body, "fixture-book");
+    }
+}
+
+#[test]
 fn body_read_complete_without_an_oss_acknowledgment_is_not_accepted() {
     let dir = TestDir::new();
     let server = ApiServer::start_with_fault(ApiFault::UploadResponseLost);

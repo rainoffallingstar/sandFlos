@@ -34,3 +34,16 @@
 Calibre/Zotero 进程回归使用真实临时 SQLite 和不同内容的附件，从 configure 到 push 验证实际 OSS 请求体等于所选文件，并逐字节确认源数据库未改变。该功能此前已实现，此处属于新增端到端回归。
 
 后续 `49117e6` 补齐真实 CLI 的 WebDAV 下载→统一推送组合回归，覆盖成功与 `saveAndPush` 未知结果；除上传字节与源库不变外，直接检查公开报告 path 指向的文件及其临时父目录已清理，不以一个未被使用的空目录作为清理证据。目标测试 4 项通过，最终 Linux 统一检查为 158 项 Rust 测试和 5 项 Python 测试；run `40978370161` 的三平台检查、下载包运行及桌面编译共 7 项全部通过。
+
+## T7 流式传输边界补齐
+
+2026-10-30，S3 真实 HTTP 适配器 + 回环 OSS 夹具（`crates/core/tests/transfer_streaming.rs`）：
+
+- `dropped_upload_connection_is_not_reported_as_accepted`：服务端在读取 8 字节后直接关闭连接，不返回 HTTP 响应。断言上传已开始、接收字节少于文件大小，结果是 `ServiceErrorKind::Network`，不会被视为云端接受。此前取消/响应丢失已覆盖，连接中断是 T7 完成条件中此前缺少的边界。
+- `one_upload_carries_the_expected_file_bytes_and_length`：服务端读完声明长度并返回 200，断言仅一次 PUT、收到的字节和长度都等于独立已知的文件样本；这验证传输内容与计数，不推断内部读取次数。公开进度事件的上限与确认时机另见 `tdd-output-secrets.md`。
+
+两项为现有实现的新增回归，不宣称新的 Red/Green。`cargo clippy --locked -p boox-core --test transfer_streaming -- -D warnings` 与单项 rustfmt 通过；2 项测试通过。
+
+## 状态优先的错误分类
+
+`rejected_http_status_survives_a_truncated_response_body` 覆盖 401/403/429/500 且声明长度大于实际正文、连接提前关闭的响应，同时覆盖二维码创建/轮询与阅读统计入口。Red 观察：`create_qr_login_at` 先读正文，截断读取被转换为 `Network`，导致 HTTP 状态和脱敏正文丢失；记录 `/tmp/sandflos-status-body-red.log`。修复为检查状态后再读取正文，使所有上述入口保留 `HttpStatus` 与原始状态码，且不包含服务端正文。Green 为 19 项 `http_failure_paths` 全部通过。

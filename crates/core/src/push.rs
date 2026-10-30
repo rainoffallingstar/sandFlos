@@ -773,12 +773,6 @@ pub enum ResendError {
     BeforeSubmission(ApiError),
     AfterSubmission(ApiError),
 }
-impl From<String> for ResendError {
-    fn from(_error: String) -> Self {
-        Self::BeforeSubmission(ApiError::protocol("推送记录无法准备为可提交的消息"))
-    }
-}
-
 impl From<ApiError> for ResendError {
     fn from(error: ApiError) -> Self {
         // Keep the status/business classification until the service layer
@@ -803,7 +797,9 @@ pub fn push_resend_with_auth_with_endpoints(
     id: &str,
 ) -> Result<(), ResendError> {
     if id.trim().is_empty() {
-        return Err(ResendError::BeforeSubmission(ApiError::input("重推记录 id 不能为空")));
+        return Err(ResendError::BeforeSubmission(ApiError::input(
+            "重推记录 id 不能为空",
+        )));
     }
     let (_bucket_key, bucket) = fetch_default_bucket_with_endpoints(endpoints, client)?;
     let mut raw_doc = fetch_push_doc_value_with_endpoints(endpoints, client, auth, id)?;
@@ -811,7 +807,7 @@ pub fn push_resend_with_auth_with_endpoints(
         .get("storageKey")
         .and_then(Value::as_str)
         .filter(|key| !key.trim().is_empty())
-        .ok_or_else(|| "推送记录缺少有效的 storageKey".to_string())?
+        .ok_or_else(|| ApiError::protocol("推送记录缺少有效的 storageKey"))?
         .to_string();
     let signed_url = build_verified_signed_download_url_with_endpoints(
         endpoints,
@@ -820,7 +816,8 @@ pub fn push_resend_with_auth_with_endpoints(
         &bucket,
         &object_key,
     )?;
-    update_push_doc_for_resend_at(&mut raw_doc, &signed_url, crate::util::unix_ms_now() as u64)?;
+    update_push_doc_for_resend_at(&mut raw_doc, &signed_url, crate::util::unix_ms_now() as u64)
+        .map_err(|_| ApiError::protocol("推送记录无法准备为可提交的消息"))?;
     // Do not repeat a write after a gateway error or lost response. The
     // service exposes an unknown result so callers can inspect the queue.
     let result = put_existing_push_message_doc_with_endpoints(endpoints, client, auth, &raw_doc);
@@ -845,7 +842,7 @@ pub fn push_resend_with_auth_with_endpoints(
                         .and_then(Value::as_str)
                         .unwrap_or("{}"),
                 )
-                .map_err(|_| "推送记录 content 解析失败".to_string())?;
+                .map_err(|_| ApiError::protocol("推送记录 content 解析失败"))?;
                 let resource_type = content
                     .get("format")
                     .and_then(Value::as_str)

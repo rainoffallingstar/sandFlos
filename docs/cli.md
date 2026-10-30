@@ -51,7 +51,7 @@ python3 scripts/verify_cli_package.py cli-package
 
 CLI 独立发布使用 `cli-v<版本>` 标签，例如当前 CLI crate 的 `cli-v0.1.0`，与桌面端每日发布流程分开。`release-cli.yml` 先核对标签与 `crates/cli/Cargo.toml` 版本一致，再在三个平台执行完整检查、生成原生 ZIP 与外部 `.zip.sha256` 校验和、解压运行校验。三个包全部通过后创建 **draft release**，由维护者检查后发布；流程不覆盖已有发布或标签。
 
-维护者也可从 Actions 手动运行 `CLI release` 并填写匹配的标签名；手动运行仅上传验收产物，不创建发布或标签。此流程已提供，尚未通过真实标签发布来验收。下载 ZIP 后可使用上述校验器；包内 `SHA256SUMS` 覆盖二进制和 README，外部 `.zip.sha256` 覆盖整个下载文件。
+维护者也可从 Actions 手动运行 `CLI release`，选择待验证的分支或 ref，填写与该 ref 的 CLI manifest 版本匹配的标签字符串。手动模式校验和打包所选 ref，不切换到同名标签，该标签也不必已存在；仅上传验收产物，不创建发布或标签。真实标签触发到 draft release 的事件链尚未执行。下载 ZIP 后可使用上述校验器；包内 `SHA256SUMS` 覆盖二进制和 README，外部 `.zip.sha256` 覆盖整个下载文件。
 
 架构与切片设计见 [TDD 方案](plans/cli-review-and-tdd.md)，实施证据见 [集成记录](plans/tdd-integration.md)。
 
@@ -89,7 +89,7 @@ sandflos diagnostics
 
 `--verbose` 在命令失败时向 stderr 追加一行稳定错误分类与退出码，stdout 的 JSON 对象不受影响。
 
-`reading stats --date` 的日期原样作为服务端统计参数传递，不随运行机器的时区换日。当前上游接口未声明统计时区，因此 JSON 明确返回 `timezone: null`，文本返回 `timezone=unspecified`；CLI 不将它解释为本地时间或 UTC。上游缺失的统计保持 `null`，不会补成零。
+`reading stats --date` 的日期原样作为服务端统计参数传递，不随运行机器的时区换日。当前尚未确认上游统计时区，因此 JSON 明确返回 `timezone: null`，文本返回 `timezone=unspecified`；CLI 不将它解释为本地时间或 UTC。上游缺失的统计保持 `null`，不会补成零。
 
 `auth login --qr` 需要交互终端；JSON、重定向和 `--no-input` 模式请使用 token。环境中的 `SANDFLOS_TOKEN` 优先于磁盘凭据，在该变量生效时导入和扫码会被拒绝，避免新凭据被遮蔽。`auth logout` 只能清除 CLI 保存的凭据，不能撤销外部环境提供的 token。
 

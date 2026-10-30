@@ -5,6 +5,46 @@ fn canonical(path: impl AsRef<std::path::Path>) -> std::path::PathBuf {
     fs::canonicalize(path).expect("canonical path")
 }
 
+/// A missing client must not leave an accept blocked after a failing test.
+fn accept_bounded(listener: std::net::TcpListener) -> Option<std::net::TcpStream> {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
+                return Some(stream);
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Join a fixture thread without allowing a wedged test helper to hang the test.
+fn join_bounded(worker: std::thread::JoinHandle<()>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while !worker.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "fixture thread did not finish before its deadline"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    worker.join().expect("fixture thread panicked");
+}
+
 #[test]
 fn library_configuration_is_isolated_and_validated() {
     let root = std::env::temp_dir().join(format!("sandflos-libraries-{}", uuid::Uuid::new_v4()));
@@ -14,7 +54,10 @@ fn library_configuration_is_isolated_and_validated() {
     fs::create_dir_all(&library).unwrap();
     let connection = rusqlite::Connection::open(library.join("metadata.db")).unwrap();
     connection
-        .execute_batch("CREATE TABLE books(id INTEGER PRIMARY KEY);")
+        .execute_batch(
+            "CREATE TABLE books(id INTEGER PRIMARY KEY,title TEXT,author_sort TEXT,path TEXT,last_modified TEXT,pubdate TEXT);
+             CREATE TABLE data(id INTEGER,book INTEGER,format TEXT,name TEXT,uncompressed_size INTEGER);",
+        )
         .unwrap();
     configure_calibre(&first, vec![library.clone()]).unwrap();
     configure_calibre(&first, vec![library.clone()]).unwrap();
@@ -26,6 +69,29 @@ fn library_configuration_is_isolated_and_validated() {
     assert!(configure_calibre(&first, vec![root.join("missing")]).is_err());
     drop(connection);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn calibre_configuration_rejects_a_books_table_without_the_required_schema() {
+    let root = std::env::temp_dir().join(format!("calibre-schema-{}", uuid::Uuid::new_v4()));
+    let library = root.join("library");
+    let config = root.join("config");
+    fs::create_dir_all(&library).unwrap();
+    let database = library.join("metadata.db");
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch("CREATE TABLE books(id INTEGER PRIMARY KEY);")
+        .unwrap();
+    drop(connection);
+    let before = fs::read(&database).unwrap();
+    let result = configure_calibre(&config, vec![library]);
+    let after = fs::read(&database).unwrap();
+    let configured = calibre_directories(&config).unwrap();
+    fs::remove_dir_all(root).unwrap();
+    let error = result.expect_err("a coincidental books.id column is not a Calibre schema");
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+    assert!(configured.is_empty());
+    assert_eq!(before, after);
 }
 #[test]
 fn selected_library_and_format_resolve_the_expected_book() {
@@ -166,27 +232,9 @@ fn webdav_archive_case_with_password(
     configure_webdav_with_store(&config, &url, "user", password, CredentialStoreKind::File)
         .unwrap();
     let worker = std::thread::spawn(move || {
-        server.set_nonblocking(true).unwrap();
-        let start = std::time::Instant::now();
-        let mut stream = loop {
-            match server.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && start.elapsed() < std::time::Duration::from_secs(5) =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(5))
-                }
-                Err(_) => return,
-            }
+        let Some(mut stream) = accept_bounded(server) else {
+            return;
         };
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut request = String::new();
         loop {
@@ -234,12 +282,12 @@ fn webdav_archive_case_with_password(
             );
         }
     }
-    worker.join().unwrap();
+    join_bounded(worker);
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
 #[test]
-fn webdav_corrupt_archive_is_a_typed_error_and_leaves_no_temporary_files() {
+fn webdav_corrupt_archive_is_a_typed_error() {
     use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
     use std::io::{BufRead, Write};
 
@@ -254,11 +302,9 @@ fn webdav_corrupt_archive_is_a_typed_error_and_leaves_no_temporary_files() {
     configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
         .unwrap();
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = server.accept().unwrap();
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
+        let Some(mut stream) = accept_bounded(server) else {
+            return;
+        };
         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
         while reader.read_line(&mut line).unwrap() > 0 {
@@ -279,9 +325,9 @@ fn webdav_corrupt_archive_is_a_typed_error_and_leaves_no_temporary_files() {
     let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(3))
         .err()
         .expect("corrupt archive must be rejected");
-    worker.join().unwrap();
+    join_bounded(worker);
     assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
-    assert!(!error.message.contains("server body must not be echoed"));
+    assert_eq!(error.message, "invalid WebDAV ZIP");
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
@@ -302,11 +348,9 @@ fn webdav_missing_archive_is_not_found() {
     configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
         .unwrap();
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = server.accept().unwrap();
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
+        let Some(mut stream) = accept_bounded(server) else {
+            return;
+        };
         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
         while reader.read_line(&mut line).unwrap() > 0 {
@@ -324,7 +368,7 @@ fn webdav_missing_archive_is_not_found() {
     let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(3))
         .err()
         .expect("missing archive must fail");
-    worker.join().unwrap();
+    join_bounded(worker);
     assert_eq!(error.kind, boox_core::services::ServiceErrorKind::NotFound);
     assert_eq!(error.message, "WebDAV attachment not found");
     drop(db);
@@ -347,11 +391,9 @@ fn webdav_expanded_archive_over_limit_is_rejected_before_extraction() {
     configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
         .unwrap();
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = server.accept().unwrap();
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
+        let Some(mut stream) = accept_bounded(server) else {
+            return;
+        };
         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
         while reader.read_line(&mut line).unwrap() > 0 {
@@ -391,7 +433,7 @@ fn webdav_expanded_archive_over_limit_is_rejected_before_extraction() {
     let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(30))
         .err()
         .expect("oversized expanded archive must fail");
-    worker.join().unwrap();
+    join_bounded(worker);
     assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
     assert_eq!(error.message, "expanded ZIP too large");
     drop(db);
@@ -407,6 +449,13 @@ fn configuration_rejects_an_unrelated_sqlite_database() {
     drop(rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap());
     assert!(configure_calibre(&root.join("config"), vec![root.clone()]).is_err());
     assert!(configure_zotero(&root.join("config"), &root).is_err());
+
+    let corrupt = root.join("corrupt");
+    fs::create_dir_all(&corrupt).unwrap();
+    fs::write(corrupt.join("metadata.db"), b"not a sqlite database").unwrap();
+    let before = fs::read(corrupt.join("metadata.db")).unwrap();
+    assert!(configure_calibre(&root.join("config"), vec![corrupt.clone()]).is_err());
+    assert_eq!(fs::read(corrupt.join("metadata.db")).unwrap(), before);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -486,11 +535,9 @@ fn webdav_rejects_archive_symlink_entries() {
     configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
         .unwrap();
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = server.accept().unwrap();
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
+        let Some(mut stream) = accept_bounded(server) else {
+            return;
+        };
         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
         while reader.read_line(&mut line).unwrap() > 0 {
@@ -518,10 +565,88 @@ fn webdav_rejects_archive_symlink_entries() {
     let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(3))
         .err()
         .expect("symlink archive must fail");
-    worker.join().unwrap();
+    join_bounded(worker);
     assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
     assert_eq!(error.message, "unsafe ZIP path");
     drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unreadable_webdav_credentials_fail_before_opening_a_connection() {
+    use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
+    use std::io::ErrorKind;
+
+    for corrupt in [false, true] {
+        let root = std::env::temp_dir().join(format!(
+            "cli-webdav-bad-credential-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let db = rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE items(itemID INTEGER,key TEXT); CREATE TABLE itemAttachments(itemID INTEGER,path TEXT,linkMode INTEGER); INSERT INTO items VALUES(4,'ABCDEFGH'); INSERT INTO itemAttachments VALUES(4,'storage:book.pdf',0);").unwrap();
+        let config = root.join("config");
+        configure_zotero(&config, &root).unwrap();
+        let server = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        server.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/zotero", server.local_addr().unwrap());
+        configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
+            .unwrap();
+
+        let credential = config.join("webdav").join("auth.json");
+        if corrupt {
+            fs::write(&credential, b"not valid credential json").unwrap();
+        } else {
+            fs::remove_file(&credential).unwrap();
+            fs::create_dir(&credential).unwrap();
+            fs::write(
+                credential.join("unexpected"),
+                b"directory in place of a file",
+            )
+            .unwrap();
+        }
+
+        let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(2))
+            .err()
+            .expect("unreadable WebDAV credentials must fail");
+        assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+        assert_eq!(error.message, "WebDAV credentials unavailable");
+        assert!(
+            matches!(server.accept(), Err(error) if error.kind() == ErrorKind::WouldBlock),
+            "credential failure must happen before any WebDAV request"
+        );
+        drop(db);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn calibre_corruption_after_configuration_is_reported_without_modifying_the_source() {
+    use boox_core::cli_libraries::*;
+
+    let root = std::env::temp_dir().join(format!("cli-calibre-corrupt-{}", uuid::Uuid::new_v4()));
+    let library = root.join("books");
+    fs::create_dir_all(library.join("author/book")).unwrap();
+    fs::write(library.join("author/book/book.epub"), b"book").unwrap();
+    let db_path = library.join("metadata.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE books(id INTEGER, title TEXT, author_sort TEXT, path TEXT, last_modified TEXT, pubdate TEXT);
+         CREATE TABLE data(id INTEGER, book INTEGER, format TEXT, name TEXT, uncompressed_size INTEGER);
+         INSERT INTO books VALUES(1,'Book','Author','author/book','2026-01-01','2000-01-01');
+         INSERT INTO data VALUES(7,1,'EPUB','book',4);",
+    )
+    .unwrap();
+    drop(db);
+    let config = root.join("config");
+    configure_calibre(&config, vec![library]).unwrap();
+
+    fs::write(&db_path, b"not a sqlite database").unwrap();
+    let corrupted = fs::read(&db_path).unwrap();
+    let error = calibre_list(&config, None, None, None).unwrap_err();
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+    assert_eq!(error.message, "cannot query Calibre database");
+    assert_eq!(fs::read(&db_path).unwrap(), corrupted);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -564,17 +689,34 @@ fn calibre_listing_is_paged_globally_across_libraries() {
     }
 
     let config = root.join("config");
-    configure_calibre(&config, vec![first, second]).unwrap();
-    let titles = |limit, offset| {
-        calibre_list(&config, limit, offset, None)
+    let first_db = first.join("metadata.db");
+    let second_db = second.join("metadata.db");
+    let first_bytes = fs::read(&first_db).unwrap();
+    let second_bytes = fs::read(&second_db).unwrap();
+    configure_calibre(&config, vec![first.clone(), second.clone()]).unwrap();
+    let titles = |limit, offset, search: Option<&str>| {
+        calibre_list(&config, limit, offset, search.map(str::to_string))
             .unwrap()
             .into_iter()
             .map(|book| book.title)
             .collect::<Vec<_>>()
     };
-    assert_eq!(titles(None, None), ["Delta", "Gamma", "Beta", "Alpha"]);
-    assert_eq!(titles(Some(2), Some(1)), ["Gamma", "Beta"]);
-    assert!(titles(Some(2), Some(10)).is_empty());
+    assert_eq!(
+        titles(None, None, None),
+        ["Delta", "Gamma", "Beta", "Alpha"]
+    );
+    assert_eq!(titles(Some(2), Some(1), None), ["Gamma", "Beta"]);
+    assert!(titles(Some(2), Some(10), None).is_empty());
+    assert_eq!(
+        titles(None, None, Some("a")),
+        ["Delta", "Gamma", "Beta", "Alpha"]
+    );
+    assert_eq!(titles(Some(1), Some(1), Some("a")), ["Gamma"]);
+    assert_eq!(titles(None, None, Some("alpha")), ["Alpha"]);
+    assert_eq!(titles(None, None, Some("author")).len(), 4);
+    assert!(titles(None, None, Some("missing")).is_empty());
+    assert_eq!(fs::read(&first_db).unwrap(), first_bytes);
+    assert_eq!(fs::read(&second_db).unwrap(), second_bytes);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -597,6 +739,7 @@ fn calibre_listing_reports_a_locked_database_without_hanging_and_can_be_retried(
     .unwrap();
     let config = root.join("config");
     configure_calibre(&config, vec![library]).unwrap();
+    let original = fs::read(&db_path).unwrap();
 
     let locker = rusqlite::Connection::open(&db_path).unwrap();
     locker.execute_batch("BEGIN EXCLUSIVE").unwrap();
@@ -614,6 +757,7 @@ fn calibre_listing_reports_a_locked_database_without_hanging_and_can_be_retried(
     let books = calibre_list(&config, None, None, None).unwrap();
     assert_eq!(books.len(), 1);
     assert_eq!(books[0].title, "Locked");
+    assert_eq!(fs::read(&db_path).unwrap(), original);
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }

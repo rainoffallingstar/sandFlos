@@ -270,10 +270,10 @@ pub fn create_qr_login_at(client: &Client, base_url: &str) -> ApiResult<QrCreate
         .body(json!({ "clientType": "web" }).to_string())
         .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     let data = parse_envelope_with_status::<Value>(&text, Some(status.as_u16()))?;
     parse_qr_create_response(data)
 }
@@ -320,10 +320,10 @@ pub fn check_qr_login_at(
         .query(&[("clientType", "web"), ("qrcodeId", normalized_qrcode_id)])
         .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     parse_envelope_with_status(&text, Some(status.as_u16()))
 }
 
@@ -343,10 +343,10 @@ pub fn send_verify_code_with_endpoints(
         .body(serde_json::to_string(payload).map_err(|_| ApiError::protocol("无法编码请求"))?)
         .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     let _: Value = parse_envelope_with_status(&text, Some(status.as_u16()))?;
     Ok(())
 }
@@ -374,10 +374,10 @@ pub fn signup_by_phone_or_email_with_endpoints(
         .body(serde_json::to_string(payload).map_err(|_| ApiError::protocol("无法编码请求"))?)
         .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     let data = parse_envelope_with_status::<Value>(&text, Some(status.as_u16()))?;
     parse_phone_or_email_login_token(data)
 }
@@ -566,10 +566,10 @@ pub fn fetch_read_time_info_with_endpoints(
     .query(&[("date", date), ("range", range)])
     .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     parse_envelope_with_status(&text, Some(status.as_u16()))
 }
 
@@ -603,10 +603,10 @@ pub fn fetch_day_read_with_endpoints(
     .query(&[("startTime", start_time), ("endTime", end_time)])
     .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     parse_envelope_with_status(&text, Some(status.as_u16()))
 }
 
@@ -686,10 +686,10 @@ fn fetch_sync_token_materials_for_auth_with_endpoints(
     .send()?;
     let headers = response.headers().clone();
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     let data = parse_envelope_with_status::<Value>(&text, Some(status.as_u16()))?;
     let sync: SyncToken = serde_json::from_value(data)
         .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
@@ -810,18 +810,17 @@ pub fn fetch_push_queue_for_dashboard_with_endpoints(
     )?
     .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
 
     let value: Value = serde_json::from_str(&text)
         .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
     let rows = value
         .get("results")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+        .ok_or_else(|| ApiError::protocol("推送队列响应缺少有效的 results 数组"))?;
 
     let mut items = Vec::new();
     for row in rows {
@@ -873,7 +872,6 @@ pub fn fetch_push_doc_value_with_endpoints(
     )?
     .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         crate::diagnostics::warn(
             "api.fetch_push_doc_value",
@@ -881,6 +879,7 @@ pub fn fetch_push_doc_value_with_endpoints(
         );
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     serde_json::from_str(&text).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
 }
 
@@ -1085,7 +1084,6 @@ pub fn put_existing_push_message_doc_with_endpoints(
     .body(doc.to_string())
     .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         crate::diagnostics::warn(
             "api.put_existing_push_message_doc",
@@ -1096,6 +1094,7 @@ pub fn put_existing_push_message_doc_with_endpoints(
         );
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     let value: Value = serde_json::from_str(&text)
         .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
     if json_field_to_string(&value, "error").is_some() {
@@ -1207,7 +1206,6 @@ pub fn put_push_message_doc_with_endpoints(
     .body(message_doc.to_string())
     .send()?;
     let status = response.status();
-    let text = response.text()?;
     if !status.is_success() {
         crate::diagnostics::warn(
             "api.put_push_message_doc",
@@ -1218,6 +1216,7 @@ pub fn put_push_message_doc_with_endpoints(
         );
         return Err(ApiError::http(status.as_u16()));
     }
+    let text = response.text()?;
     let value: Value = serde_json::from_str(&text)
         .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
     if json_field_to_string(&value, "error").is_some() {

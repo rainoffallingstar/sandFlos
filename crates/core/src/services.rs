@@ -326,12 +326,14 @@ fn fail_file<F>(
     on_progress(PushProgress::Finished(result.clone()));
 }
 
-fn prepare_push_files<F>(
+fn prepare_push_files<F, C>(
     files: &[PathBuf],
     on_progress: &mut F,
+    cancelled: C,
 ) -> (Vec<Option<PushFileResult>>, Vec<(usize, u64)>)
 where
     F: FnMut(PushProgress),
+    C: Fn() -> bool,
 {
     let mut results = Vec::with_capacity(files.len());
     let mut valid = Vec::new();
@@ -356,6 +358,18 @@ where
             size: None,
             error: None,
         };
+
+        if cancelled() {
+            fail_file(
+                on_progress,
+                &mut result,
+                PushStage::Prepare,
+                ServiceError::cancelled("prepare"),
+                PushOutcome::Failed,
+            );
+            results.push(Some(result));
+            continue;
+        }
 
         let metadata = match fs::metadata(path) {
             Ok(meta) => meta,
@@ -438,6 +452,18 @@ where
         results.push(Some(result));
     }
 
+    if cancelled() {
+        for &(index, _) in &valid {
+            fail_file(
+                on_progress,
+                results[index].as_mut().unwrap(),
+                PushStage::Prepare,
+                ServiceError::cancelled("prepare"),
+                PushOutcome::Failed,
+            );
+        }
+        valid.clear();
+    }
     (results, valid)
 }
 
@@ -478,10 +504,18 @@ fn finish_results(results: Vec<Option<PushFileResult>>) -> PushReport {
 /// Returns a report only when no input can be pushed. Callers can use this to
 /// preserve argument and local-I/O error precedence before resolving a token.
 pub fn validate_local_push_files(files: &[PathBuf]) -> Option<PushReport> {
+    validate_local_push_files_with_cancel(files, || false)
+}
+
+/// Preflight with the caller's cancellation signal, before resolving credentials.
+pub fn validate_local_push_files_with_cancel<C: Fn() -> bool>(
+    files: &[PathBuf],
+    cancelled: C,
+) -> Option<PushReport> {
     if files.is_empty() {
         return None;
     }
-    let (results, valid) = prepare_push_files(files, &mut |_| {});
+    let (results, valid) = prepare_push_files(files, &mut |_| {}, cancelled);
     if valid.is_empty() {
         Some(finish_results(results))
     } else {
@@ -534,7 +568,9 @@ impl<B: PushBackend> PushService<B> {
         }
 
         let total = files.len();
-        let (mut results, valid) = prepare_push_files(files, &mut on_progress);
+        let (mut results, valid) = prepare_push_files(files, &mut on_progress, || {
+            self.backend.cancellation_requested()
+        });
 
         if valid.is_empty() {
             return finish_results(results);
@@ -711,6 +747,20 @@ impl<B: PushBackend> PushService<B> {
             };
             result.message_id = Some(doc_id.clone());
             result.rev = Some(rev.clone());
+            if self.backend.cancellation_requested() {
+                // The message write response may already have committed the
+                // document. Record the identity we received, but do not start
+                // confirmation or submission after cancellation.
+                fail_file(
+                    &mut on_progress,
+                    &mut result,
+                    PushStage::WriteMessage,
+                    ServiceError::cancelled("write_message"),
+                    PushOutcome::Unknown,
+                );
+                results[index] = Some(result);
+                continue;
+            }
             on_progress(PushProgress::Phase {
                 index,
                 total,
@@ -1107,10 +1157,9 @@ struct CancellableReader {
 impl Read for CancellableReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if self.flag.load(Ordering::Relaxed) {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "operation cancelled",
-            ));
+            // Interrupted is commonly retried by read adapters. Use an
+            // ordinary nonretryable error so cancellation aborts the body.
+            return Err(io::Error::other("operation cancelled"));
         }
         self.file.read(buffer)
     }
@@ -1287,7 +1336,7 @@ impl PushBackend for HttpPushBackend {
         signed_url: &str,
     ) -> ServiceResult<(String, String)> {
         self.check_cancelled()?;
-        let written = put_push_message_doc_with_endpoints(
+        put_push_message_doc_with_endpoints(
             &self.endpoints,
             &self.client,
             auth,
@@ -1297,16 +1346,10 @@ impl PushBackend for HttpPushBackend {
             object_key,
             signed_url,
         )
-        .map_err(|error| classify("write_message", error));
-        match written {
-            Ok(_) if self.cancellation_requested() => {
-                // The write may already have committed even though its
-                // response arrived. Keep the message identity and report an
-                // unknown result instead of a definite failure.
-                Err(ServiceError::cancelled("write_message"))
-            }
-            other => other,
-        }
+        .map_err(|error| classify("write_message", error))
+        // A successful response carries the document identity even if
+        // cancellation arrived while it was in flight. The service records
+        // that identity and stops before the next network phase.
     }
     fn confirm_sync(
         &mut self,
@@ -1323,7 +1366,7 @@ impl PushBackend for HttpPushBackend {
             rev,
         )
         .map_err(|error| classify("confirm_sync", error));
-        if self.cancellation_requested() {
+        if confirmed.is_err() && self.cancellation_requested() {
             return Err(ServiceError::cancelled("confirm_sync"));
         }
         confirmed
@@ -1352,9 +1395,9 @@ impl PushBackend for HttpPushBackend {
         )
         .map(|_| ())
         .map_err(|error| classify("save_and_push", error));
-        if self.cancellation_requested() {
-            // A cancellation after submission began cannot prove that the
-            // server rejected it. The service reports unknown for this stage.
+        if submitted.is_err() && self.cancellation_requested() {
+            // Preserve a received success. Only an unconfirmed submission
+            // remains unknown when cancellation arrives while it is in flight.
             return Err(ServiceError::cancelled("save_and_push"));
         }
         submitted

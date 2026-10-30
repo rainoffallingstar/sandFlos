@@ -117,7 +117,11 @@ pub fn configure_calibre(config_dir: &Path, libraries: Vec<PathBuf>) -> Result<(
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .map_err(|_| "cannot open Calibre database")?
-        .prepare("SELECT id FROM books LIMIT 0")
+        .prepare(
+            "SELECT b.id,b.title,b.author_sort,b.path,b.last_modified,b.pubdate,
+                    d.id,d.book,d.format,d.name,d.uncompressed_size
+             FROM books b LEFT JOIN data d ON d.book=b.id LIMIT 0",
+        )
         .map_err(|_| "not a Calibre database")?;
         if !normalized.contains(&library) {
             normalized.push(library);

@@ -79,6 +79,26 @@ fn corrupted_migration_source_fails_without_creating_target_and_can_be_retried()
         std::fs::read(&source).unwrap(),
         br#"{"token":"fixture-token","updated_ms":2}"#
     );
+
+    // A separate process must be able to use the credential written by the
+    // retry; the legacy source stays byte-for-byte unchanged.
+    let verified = command_with_auth(
+        &["--json", "auth", "status", "--verify"],
+        &config,
+        server.endpoint(),
+    )
+    .output()
+    .unwrap();
+    assert_eq!(verified.status.code(), Some(0), "{}", stdout(&verified));
+    assert_eq!(json_stdout(&verified)["data"]["authorized"], true);
+    assert!(server
+        .requests()
+        .last()
+        .is_some_and(|request| request.contains("Bearer fixture-token")));
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        br#"{"token":"fixture-token","updated_ms":2}"#
+    );
 }
 
 #[test]

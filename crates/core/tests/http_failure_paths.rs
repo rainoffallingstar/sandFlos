@@ -54,6 +54,7 @@ struct Response {
     status: &'static str,
     extra_headers: Vec<&'static str>,
     body: String,
+    content_length: Option<usize>,
 }
 
 impl Response {
@@ -61,6 +62,7 @@ impl Response {
         Self {
             status,
             extra_headers: Vec::new(),
+            content_length: None,
             body: body.into(),
         }
     }
@@ -74,6 +76,7 @@ impl Loopback {
     fn redirect() -> Self {
         Self::with_routes(|_, _| Response {
             status: "302 Found",
+            content_length: None,
             extra_headers: vec!["Location: /api/1/push/saveAndPush-retry"],
             body: String::new(),
         })
@@ -144,6 +147,7 @@ impl Loopback {
                     status,
                     extra_headers,
                     body,
+                    content_length,
                 } = {
                     let recorded = observed.lock().expect("observed requests");
                     let last = recorded.last().expect("recorded request");
@@ -153,7 +157,7 @@ impl Loopback {
                 };
                 let mut response = format!(
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-                    body.len()
+                    content_length.unwrap_or(body.len())
                 );
                 for header in extra_headers {
                     response.push_str(header);
@@ -297,6 +301,7 @@ fn sts_and_queue_write_use_the_injected_origin() {
         ),
         ("GET", "/api/1/users/syncToken") => Response {
             status: "200 OK",
+            content_length: None,
             extra_headers: vec!["Set-Cookie: RouteSession=route-cookie; Path=/neocloud"],
             body: r#"{"result_code":0,"data":{"cookie_name":"SyncGatewaySession","session_id":"fixture-session"}}"#.to_string(),
         },
@@ -455,6 +460,7 @@ fn queue_auth_routes(method: &str, path: &str) -> Option<Response> {
         )),
         ("GET", "/api/1/users/syncToken") => Some(Response {
             status: "200 OK",
+            content_length: None,
             extra_headers: vec!["Set-Cookie: SyncGatewaySession=fixture-session; Path=/"],
             body: r#"{"result_code":0,"data":{"cookie_name":"SyncGatewaySession","session_id":"fixture-session"}}"#.to_string(),
         }),
@@ -928,4 +934,104 @@ fn resend_preparation_keeps_http_rejection_type_and_performs_no_write() {
             .iter()
             .all(|r| !r.request_line.starts_with("PUT ") && !r.request_line.starts_with("POST ")));
     }
+}
+
+#[test]
+fn rejected_http_status_survives_a_truncated_response_body() {
+    use boox_core::api::{
+        check_qr_login_at, create_qr_login_at, fetch_day_read_with_endpoints,
+        fetch_read_time_info_with_endpoints,
+    };
+    for (status, code) in [
+        ("401 Unauthorized", 401),
+        ("403 Forbidden", 403),
+        ("429 Too Many Requests", 429),
+        ("500 Internal Server Error", 500),
+    ] {
+        let server = Loopback::with_routes(move |_, _| Response {
+            status,
+            extra_headers: Vec::new(),
+            body: "upstream-secret".into(),
+            content_length: Some(1000), // peer closes before the declared body ends
+        });
+        let client = boox_core::api::create_client(1).unwrap();
+        let endpoints = ApiEndpoints::loopback(&server.endpoint, &server.endpoint).unwrap();
+        let results = [
+            create_qr_login_at(&client, &server.endpoint).map(|_| ()),
+            check_qr_login_at(&client, &server.endpoint, "fixture").map(|_| ()),
+            fetch_read_time_info_with_endpoints(&endpoints, &client, "token", "2026-10-30", "week")
+                .map(|_| ()),
+            fetch_day_read_with_endpoints(&endpoints, &client, "token", "2026-10-29", "2026-10-30")
+                .map(|_| ()),
+        ];
+        for result in results {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind, ApiErrorKind::HttpStatus, "{error:?}");
+            assert_eq!(error.status, Some(code));
+            assert!(!error.message.contains("upstream-secret"));
+        }
+    }
+}
+
+#[test]
+fn queue_list_rejects_valid_json_without_an_array_of_results() {
+    for body in [
+        r#"{"rows":[]}"#,
+        "null",
+        "[]",
+        r#"{"results":null}"#,
+        r#"{"results":{}}"#,
+    ] {
+        let server = Loopback::with_routes(move |method, path| {
+            if path.starts_with("/neocloud/_changes?") {
+                return Response::json("200 OK", body);
+            }
+            push_fixture_routes(method, path)
+        });
+        let backend = HttpQueueReadBackend::with_test_endpoints(
+            Duration::from_secs(2),
+            "fixture-token",
+            &server.endpoint,
+            &server.endpoint,
+        )
+        .unwrap();
+        let error = QueueService::new(backend)
+            .list(None)
+            .expect_err("invalid queue JSON must not mean a healthy empty queue");
+        assert_eq!(error.kind, ServiceErrorKind::Protocol);
+        assert_eq!(error.kind.exit_code(), 4);
+    }
+}
+
+#[test]
+fn a_confirmed_submission_is_preserved_when_cancel_arrives_with_the_response() {
+    use boox_core::services::{HttpPushBackend, PushBackend};
+    static CANCEL_AFTER_ACK: AtomicBool = AtomicBool::new(false);
+    let server = Loopback::with_routes(|method, path| {
+        assert_eq!((method, path), ("POST", "/api/1/push/saveAndPush"));
+        CANCEL_AFTER_ACK.store(true, Ordering::SeqCst);
+        Response::json("200 OK", r#"{"result_code":0,"data":{"accepted":true}}"#)
+    });
+    let mut backend = HttpPushBackend::with_test_endpoints(
+        Duration::from_secs(2),
+        "fixture-token",
+        &server.endpoint,
+        &server.endpoint,
+    )
+    .unwrap()
+    .with_cancel_flag(&CANCEL_AFTER_ACK);
+    let result = backend.save_and_push(
+        &auth(),
+        "onyx-cloud",
+        "uid-fixture/push/book.pdf",
+        "book.pdf",
+        "pdf",
+        "doc-fixture",
+        "1-fixture",
+    );
+    assert!(
+        result.is_ok(),
+        "a received success must not become unknown: {result:?}"
+    );
+    assert_eq!(server.requests().len(), 1);
 }

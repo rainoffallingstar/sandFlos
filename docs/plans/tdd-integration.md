@@ -11,7 +11,7 @@
 - neocloud 复用调用方 HTTP 客户端，继承请求超时和重定向策略；同步 Cookie 按实际请求 URL 的 domain/path/secure 规则选取。
 - 队列删除保留两步结果、404 幂等、部分完成退出 6；本地凭据错误保持退出 5，取消标记传入变更后端。
 - Calibre、Zotero 使用只读 SQLite 与显式目录；WebDAV ZIP 必须包含所选附件，含空格密码可存取，下载限制、路径检查和临时清理保留。
-- SIGINT 在 OSS 上传读取中生效，停止读取本地文件并阻止后续消息写入；批次不再启动下一个文件，已成功项保留结果。消息写入或 `saveAndPush` 已开始后取消按 `unknown` 保留消息 ID，退出 130。
+- SIGINT 参与本地预检、OSS reader 与阶段检查，批次不再启动下一个文件；已确认的最终提交保留 accepted，已创建消息但未完成推送、或提交响应未确认时保留 unknown 和已知消息 ID。CLI 取消优先退出 130；blocking 网络调用仍受有限请求超时约束。
 - 打包和消费端验证共用脚本；验证内容、SHA-256、可执行位和无显示启动，拒绝额外文件、符号链接与危险归档；`--force` 不覆盖无关文件。
 
 ## 测试证据
@@ -21,7 +21,7 @@
 - 凭据与早期认证：`tdd-auth.md`；早期服务：`tdd-services.md`。
 - 打包、下载验证：`cli-artifact-verification.md`。
 
-交班基线提交 `3d79aef` 的 121 项 Rust 测试、本地检查、Linux/macOS/Windows CLI CI 与 macOS 桌面编译均通过。本轮最新 Linux 统一检查已通过：158 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release、依赖边界、无显示 smoke、打包与本地产物运行均通过。
+交班基线提交 `3d79aef` 的 121 项 Rust 测试、本地检查、Linux/macOS/Windows CLI CI 与 macOS 桌面编译均通过。此前 `49117e6` 的 Linux 统一检查通过：158 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release、依赖边界、无显示 smoke、打包与本地产物运行均通过。
 
 2026-10-30 收尾：夹具修复提交 `25aeab2` 的 CI run `40976698508` 已全部通过，包含三平台 CLI 检查、三平台下载包验证/运行和 macOS 桌面编译，共 7 项。间歇 CI 失败暴露的回环连接模式问题已修复：非阻塞 listener 接受连接后显式设置阻塞读写与超时，WebDAV 夹具读取完整请求头；原业务断言保留。精确交班记录见 `cli-handoff.md`。
 
@@ -38,3 +38,5 @@ bash scripts/check_cli.sh
 ## 验收边界
 
 HTTP 夹具使用合成协议数据，未抓取生产样本。真实 BOOX 账号、云端业务码、设备接收、平台凭据写入/读取、Windows ACL、二维码可扫码性、大文件实际内存/吞吐和真实慢链路仍需单独验收。取消已由回环慢速 OSS 与真实 SIGINT 子进程测试覆盖；云端接受与设备收到分开记录。CI 文件存在不代表本轮 CI 已通过；精确提交和 run 以交班记录为准。
+
+2026-10-30 后续边界收尾：本机完整统一检查为 **196 项 Rust + 7 项 Python，0 失败**，fmt、严格 clippy、release、依赖隔离、无显示与包运行均通过。新增类型化 HTTP/严格信封、队列结构、取消、凭据/二维码、书库/迁移和独立发布验收；实际 Red/Green 与最终代码/CI 对照见 `cli-handoff.md` 和 `cli-plan-status.md`，不把旧 run 复用为新实现证明。
