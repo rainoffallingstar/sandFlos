@@ -17,7 +17,7 @@
 - 下载真实 CI 产物 `sandflos-ubuntu-latest`（run `40963914110`，提交 `3d79aef`，artifact `12937845388`）：`SHA256SUMS` 校验通过，下载目录内二进制保持 `0755`，`--help` 与 `--version` 均退出 0，未创建配置目录。
 - 同一 run 的 macOS 与 Windows artifact ZIP 均可下载；Windows `SHA256SUMS` 使用 `sandflos.exe` 与 CRLF，验证器在对应平台按平台二进制名检查。
 - workflow YAML 可解析；artifact 查询命令已在本地按 run `40963914110` 解析出 Linux artifact ID。
-- 最终提交 `25aeab2` 的 CI run `40976698508` 已在 Linux/macOS/Windows 分别下载本 run 的 artifact ZIP，验证文件、校验和、原生二进制 `--help` / `--version` 和无显示启动，三项 `verify-package` 全部通过；对应三平台 CLI 检查及 macOS 桌面编译也通过。记录更新于 2026-10-30。
+- 最终提交 `49117e6` 的 CI run `40978370161` 已在 Linux/macOS/Windows 分别下载本 run 的 artifact ZIP，验证文件、校验和、原生二进制 `--help` / `--version` 和无显示启动，三项 `verify-package` 全部通过；对应三平台 CLI 检查及 macOS 桌面编译也通过。记录更新于 2026-10-30。
 - 未执行真实账号、扫码、云端推送或设备接收验收。
 - 归档校验额外拒绝重复条目、反斜杠路径、盘符/ADS 名称和符号链接；artifact 下载文件固定在工作区根目录，避免 Windows 上 `runner.temp` 的盘符路径在 Git Bash 中被误解析。
 

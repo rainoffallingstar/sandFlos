@@ -1,6 +1,6 @@
 # CLI 改造交班记录
 
-更新：2026-10-30。仓库 `/home/fallingstar10/shire/sandFlos`，目标分支 `cli`。本轮从已推送的 `3d79aef` 继续；打包切片为 `a7b7e35`，业务集成为 `87cf039`。最终代码提交 `25aeab2f5cce398409d2b5d51136b470a61cc0a8` 已推送到 `origin/cli`，CI run `40976698508` 全部通过。后续文档提交不改变这份已验收代码。
+更新：2026-10-30。仓库 `/home/fallingstar10/shire/sandFlos`，目标分支 `cli`。本轮从已推送的 `3d79aef` 继续；打包切片为 `a7b7e35`，业务集成为 `87cf039`，跨平台夹具修复为 `25aeab2`。最终验收提交 `49117e69a8246a78eb80f14908046b09ed505eaa` 已推送到 `origin/cli`，CI run `40978370161` 已 7/7 全部通过。后续文档提交不改变这份已验收代码。
 
 ## 进度
 
@@ -31,9 +31,11 @@ M1/M2 命令入口与独立 CLI 已实现。本轮补齐真实 HTTP 回环协议
 
 ## 验证
 
-最终代码的本机 Linux 统一检查通过：156 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release 构建、桌面依赖隔离、无显示 smoke、打包与运行验证全部通过。
+最新提交的本机 Linux 统一检查通过：158 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release 构建、桌面依赖隔离、无显示 smoke、打包与运行验证全部通过。
 
-CI run `40976698508` 在提交 `25aeab2` 上完成，7 项任务全部通过：Linux/macOS/Windows 的 `cli` 检查、三平台 `verify-package` 下载压缩包后验证并运行，以及 macOS `desktop-compatibility` 编译。Windows 跳过两项 Unix 专属 Rust 测试；Python 的 POSIX shell 正常夹具由对应平台的原生 release 包验收补充。
+审查补齐 T11 组合验收：新增两项真实 CLI 的 WebDAV 下载后推送测试，覆盖成功与最终提交未知；核对 OSS 上传字节、报告中的附件与临时父目录清理、源数据库不变。对应 `library_push_e2e` 共 4 项通过；属于已有实现的新增组合回归，未改生产逻辑。详细证据见 `cli-libraries-execution.md`。
+
+最终 CI run `40978370161` 在提交 `49117e6` 上完成，7 项任务全部通过：Linux/macOS/Windows 的 `cli` 检查、三平台 `verify-package` 下载压缩包后验证并运行，以及 macOS `desktop-compatibility` 编译。Windows 跳过两项 Unix 专属 Rust 测试；Python 的 POSIX shell 正常夹具由对应平台的原生 release 包验收补充。此前夹具修复提交 `25aeab2` 的 run `40976698508` 也已 7/7 通过。
 
 ```bash
 bash scripts/check_cli.sh
@@ -57,7 +59,7 @@ Linux 默认无可用凭据后端时，应使用 `SANDFLOS_TOKEN` 或显式 `SAN
 | `crates/cli/src/auth.rs`、`queue.rs`、`query.rs` | 进程配置、错误映射与参数优先级 |
 | `crates/core/tests/http_failure_paths.rs` | 真实 HTTP 协议与失败分类 |
 | `crates/cli/tests/query_queue_e2e.rs`、`failure_paths.rs`、`query_validation.rs` | 进程成功/失败/输入契约 |
-| `crates/cli/tests/library_push_e2e.rs` | 真实 SQLite 选中格式进入 OSS，确认数据库不变 |
+| `crates/cli/tests/library_push_e2e.rs` | 真实 SQLite 选中格式及 WebDAV 下载进入 OSS，确认数据库不变、成功/unknown 后清理 |
 | `scripts/check_cli.sh`、`package_cli.py`、`verify_cli_package.py` | 统一检查、打包、下载后执行 |
 | `tdd-http.md`、`cli-libraries-execution.md` | 实际 Red/Green 与回归测试的区别 |
 | `tdd-integration.md`、`cli-artifact-verification.md` | 集成与产物证据 |
@@ -76,6 +78,6 @@ Linux 默认无可用凭据后端时，应使用 `SANDFLOS_TOKEN` 或显式 `SAN
 
 1. 先 `git status`、`git log -5 --oneline`，保留工作区改动；不要假设交班时必然干净，不要覆盖已有实现。
 2. 读取本文件与 `tdd-http.md`，只复跑需要的统一检查，不重做已完成切片。
-3. 已验收代码为 `25aeab2`、run `40976698508`（7/7 通过）；若有后续代码变更，再查看对应新 run，不重复修复已处理的 CI 夹具问题。
+3. 已验收代码为 `49117e6`、run `40978370161`（7/7 通过）；若有后续代码变更，再查看对应新 run，不重复修复已处理的 CI 夹具或 WebDAV 组合验收问题。
 4. 真实账号与平台人工 smoke 单独记录。HTTP 夹具为合成数据，不夸大为生产协议已全量验证。
 5. 新修复继续在 S1–S4 公共边界做 Red/Green；不要把并行编译错误计入 TDD Red。

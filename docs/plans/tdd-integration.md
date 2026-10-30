@@ -20,9 +20,11 @@
 - 凭据与早期认证：`tdd-auth.md`；早期服务：`tdd-services.md`。
 - 打包、下载验证：`cli-artifact-verification.md`。
 
-交班基线提交 `3d79aef` 的 121 项 Rust 测试、本地检查、Linux/macOS/Windows CLI CI 与 macOS 桌面编译均通过。本轮最终 Linux 统一检查已通过：156 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release、依赖边界、无显示 smoke、打包与本地产物运行均通过。
+交班基线提交 `3d79aef` 的 121 项 Rust 测试、本地检查、Linux/macOS/Windows CLI CI 与 macOS 桌面编译均通过。本轮最新 Linux 统一检查已通过：158 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release、依赖边界、无显示 smoke、打包与本地产物运行均通过。
 
-2026-10-30 收尾：最终代码 `25aeab2` 的 CI run `40976698508` 已全部通过，包含三平台 CLI 检查、三平台下载包验证/运行和 macOS 桌面编译，共 7 项。间歇 CI 失败暴露的回环连接模式问题已修复：非阻塞 listener 接受连接后显式设置阻塞读写与超时，WebDAV 夹具读取完整请求头；原业务断言保留。精确交班记录见 `cli-handoff.md`。
+2026-10-30 收尾：夹具修复提交 `25aeab2` 的 CI run `40976698508` 已全部通过，包含三平台 CLI 检查、三平台下载包验证/运行和 macOS 桌面编译，共 7 项。间歇 CI 失败暴露的回环连接模式问题已修复：非阻塞 listener 接受连接后显式设置阻塞读写与超时，WebDAV 夹具读取完整请求头；原业务断言保留。精确交班记录见 `cli-handoff.md`。
+
+同日最终审查进一步补齐 WebDAV 下载后推送的真实 CLI 组合回归：成功退出 0、最终提交未知退出 6，均检查上传字节、实际报告路径的文件/目录清理和源数据库不变。实现此前已有，不新增业务 Red/Green 声明。最终验收代码为 `49117e6`，其 CI run `40978370161` 已 7/7 全部通过，覆盖上述三平台检查、下载包运行和桌面编译。
 
 统一命令：
 
