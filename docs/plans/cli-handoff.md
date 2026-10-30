@@ -1,6 +1,6 @@
 # CLI 改造交班记录
 
-日期：2026-10-29。仓库 `/home/fallingstar10/shire/sandFlos`，目标分支 `cli`。本轮从已推送的 `3d79aef` 继续；打包切片提交为 `a7b7e35`。最终集成提交与远端 CI 结果在验收后补入本文件。
+更新：2026-10-30。仓库 `/home/fallingstar10/shire/sandFlos`，目标分支 `cli`。本轮从已推送的 `3d79aef` 继续；打包切片为 `a7b7e35`，业务集成为 `87cf039`。最终代码提交 `25aeab2f5cce398409d2b5d51136b470a61cc0a8` 已推送到 `origin/cli`，CI run `40976698508` 全部通过。后续文档提交不改变这份已验收代码。
 
 ## 进度
 
@@ -31,7 +31,9 @@ M1/M2 命令入口与独立 CLI 已实现。本轮补齐真实 HTTP 回环协议
 
 ## 验证
 
-本轮本机 Linux 统一检查通过：156 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release 构建、桌面依赖隔离、无显示 smoke、打包与运行验证全部通过。远端新增三平台下载验收仍待本轮 CI 结果。
+最终代码的本机 Linux 统一检查通过：156 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release 构建、桌面依赖隔离、无显示 smoke、打包与运行验证全部通过。
+
+CI run `40976698508` 在提交 `25aeab2` 上完成，7 项任务全部通过：Linux/macOS/Windows 的 `cli` 检查、三平台 `verify-package` 下载压缩包后验证并运行，以及 macOS `desktop-compatibility` 编译。Windows 跳过两项 Unix 专属 Rust 测试；Python 的 POSIX shell 正常夹具由对应平台的原生 release 包验收补充。
 
 ```bash
 bash scripts/check_cli.sh
@@ -39,7 +41,9 @@ bash scripts/check_cli.sh
 
 该脚本包含 Python 进程测试、Rust 测试、fmt、严格 clippy、release、依赖闭包、无显示启动与本地产物验证。HTTP 测试使用真实适配器和回环 TCP；CLI 测试运行真实子进程；SQLite 使用临时真实数据库。
 
-交班基线 `3d79aef` 的 121 项 Rust 测试与三平台 CLI CI、macOS 桌面编译已通过。基线 run 为 `40963914110`；本轮新增的三平台 `verify-package` 必须查看新 run 后才能记为通过。
+交班基线 `3d79aef` 的 121 项 Rust 测试与三平台 CLI CI、macOS 桌面编译已通过，基线 run 为 `40963914110`。本轮新增下载验收的证据为上述最终 run。
+
+收尾时实际处理过间歇 CI 失败：run `40974612627` 的 Windows 认证、`40975499550` 的 Windows 查询和 `40975963627` 的 macOS 重推测试在请求阶段提前失败。回环夹具的 listener 使用非阻塞模式，接受的连接却未显式切回阻塞模式；最终提交统一连接模式和读写超时，WebDAV 夹具读取完整请求头。测试断言未放宽。这是跨平台夹具修复，不冒充新增业务功能的 TDD Red/Green。失败日志摘要现按片段写入检查注解，避免 GitHub 注解截断。
 
 Linux 默认无可用凭据后端时，应使用 `SANDFLOS_TOKEN` 或显式 `SANDFLOS_CREDENTIAL_STORE=file`；不要静默降级明文存储。
 
@@ -72,6 +76,6 @@ Linux 默认无可用凭据后端时，应使用 `SANDFLOS_TOKEN` 或显式 `SAN
 
 1. 先 `git status`、`git log -5 --oneline`，保留工作区改动；不要假设交班时必然干净，不要覆盖已有实现。
 2. 读取本文件与 `tdd-http.md`，只复跑需要的统一检查，不重做已完成切片。
-3. 根据本文件精确提交/run 检查三平台 `cli`、`verify-package` 和桌面兼容结果；如仍 pending，先收尾 CI。
+3. 已验收代码为 `25aeab2`、run `40976698508`（7/7 通过）；若有后续代码变更，再查看对应新 run，不重复修复已处理的 CI 夹具问题。
 4. 真实账号与平台人工 smoke 单独记录。HTTP 夹具为合成数据，不夸大为生产协议已全量验证。
 5. 新修复继续在 S1–S4 公共边界做 Red/Green；不要把并行编译错误计入 TDD Red。

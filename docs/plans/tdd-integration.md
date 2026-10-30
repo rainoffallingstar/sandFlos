@@ -20,7 +20,9 @@
 - 凭据与早期认证：`tdd-auth.md`；早期服务：`tdd-services.md`。
 - 打包、下载验证：`cli-artifact-verification.md`。
 
-交班基线提交 `3d79aef` 的 121 项 Rust 测试、本地检查、Linux/macOS/Windows CLI CI 与 macOS 桌面编译均通过。本轮最终 Linux 统一检查已通过：156 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release、依赖边界、无显示 smoke、打包与本地产物运行均通过。远端新 run 记录见 `cli-handoff.md`。
+交班基线提交 `3d79aef` 的 121 项 Rust 测试、本地检查、Linux/macOS/Windows CLI CI 与 macOS 桌面编译均通过。本轮最终 Linux 统一检查已通过：156 项 Rust 测试、5 项 Python 进程测试，0 失败；fmt、严格 clippy、release、依赖边界、无显示 smoke、打包与本地产物运行均通过。
+
+2026-10-30 收尾：最终代码 `25aeab2` 的 CI run `40976698508` 已全部通过，包含三平台 CLI 检查、三平台下载包验证/运行和 macOS 桌面编译，共 7 项。间歇 CI 失败暴露的回环连接模式问题已修复：非阻塞 listener 接受连接后显式设置阻塞读写与超时，WebDAV 夹具读取完整请求头；原业务断言保留。精确交班记录见 `cli-handoff.md`。
 
 统一命令：
 

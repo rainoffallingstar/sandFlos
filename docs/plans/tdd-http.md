@@ -29,4 +29,6 @@
 
 最终测试数量、release、CI 和剩余人工验收以 `tdd-integration.md`、`cli-handoff.md` 为准。
 
+2026-10-30 跨平台回归收尾：Windows 认证/查询和 macOS 重推曾在不同轮次提前返回网络或协议错误。回环 fixture 的非阻塞 listener 接受连接后，现显式将连接切回阻塞模式并设置读写超时；WebDAV fixture 按行读完请求头后再响应。未放宽业务断言，也未改变生产请求重试策略。最终 `25aeab2` 的三平台检查和下载包运行在 run `40976698508` 全部通过；此项属于夹具修复证据。
+
 Calibre/Zotero 进程回归使用真实临时 SQLite 和不同内容的附件，从 configure 到 push 验证实际 OSS 请求体等于所选文件，并逐字节确认源数据库未改变。该功能此前已实现，此处属于新增端到端回归。
