@@ -30,7 +30,7 @@ cargo test -p boox-core --test push_cancellation
 cargo test -p sandflos-cli --test push_cancellation
 ```
 
-- core `push_cancellation`：5 项通过，0 failed。
+- core `push_cancellation`：子 agent 聚焦验收 5 项；父 agent 加入预检取消用例后，最终统一检查 6 项通过，0 failed。
 - CLI `push_cancellation`：2 项通过，0 failed。
 - 夹具边界：listener 为非阻塞 accept；连接切回阻塞并设 5 秒读写超时；慢 body 循环同时受 `Instant` 截止时间和停止标志约束；子进程等待有 10 秒 watchdog，超时会 kill 并 reap；fixture 线程 join 有 2 秒上限，断言失败不会由阻塞 socket 卡住测试进程。
 - 一次 64 MiB 扩展实验发现慢夹具（约 80 KB/s）会在 SIGINT 后让客户端长时间阻塞于 socket 写。最终用例改用要求的 8 MiB，并把夹具排空速率提高到约 2.5 MB/s；这不改变生产取消语义，也不证明真实慢链路。
