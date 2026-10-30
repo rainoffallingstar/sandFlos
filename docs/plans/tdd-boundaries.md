@@ -46,3 +46,7 @@ CARGO_NET_OFFLINE=true cargo test --locked -p sandflos-cli --test migration
 - 未连接真实 WebDAV 服务；回环夹具不能证明服务端认证/分块/重定向行为。
 - 未验证 macOS Keychain、Windows Credential Manager 或 Windows ACL。
 - ZIP 的压缩炸弹、超大响应和损坏条目已有覆盖，但真实 200 MiB 吞吐与内存峰值仍需人工验收。
+
+## 跨平台最终检查补记
+
+2026-10-30，代码 `73f36f8` 的 CI run `41013482622` 中，Linux 与桌面编译通过，macOS、Windows 都在多库路径断言失败。实现按既有契约返回 canonical 路径；新测试却拿临时目录的原始拼写比较，macOS 的 `/var` 别名和 Windows 的 canonical 前缀因此不一致。修正测试的期望路径为真实 canonical 路径，仍断言每个库对应自己的附件内容；这属于跨平台测试修复，不更改产品行为。修复后的最终 run 见交班记录。

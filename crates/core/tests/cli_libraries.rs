@@ -508,9 +508,12 @@ fn calibre_lists_duplicate_ids_from_separate_libraries_with_their_own_paths() {
     assert_eq!(
         resolved,
         vec![
-            (first.to_string_lossy().to_string(), b"First Book".to_vec()),
             (
-                second.to_string_lossy().to_string(),
+                canonical(&first).to_string_lossy().to_string(),
+                b"First Book".to_vec()
+            ),
+            (
+                canonical(&second).to_string_lossy().to_string(),
                 b"Second Book".to_vec()
             ),
         ]
