@@ -30,7 +30,7 @@ use std::{
 use uuid::Uuid;
 
 const MAX_SINGLE_UPLOAD_BYTES: u64 = 200 * 1024 * 1024;
-const MIN_STS_REMAINING_SECS_FOR_SIGNED_URL: i64 = 120;
+pub(crate) const MIN_STS_REMAINING_SECS_FOR_SIGNED_URL: i64 = 120;
 
 #[derive(Debug, Clone)]
 pub struct UploadItem {
@@ -237,7 +237,7 @@ x-oss-security-token:{}
     }
 }
 
-fn signed_download_url_with_endpoints(
+pub(crate) fn signed_download_url_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     bucket: &BucketConfig,
     sts: &OssSts,
@@ -309,7 +309,7 @@ fn verify_oss_object_via_signed_url(client: &Client, signed_url: &str) -> Result
     }
 }
 
-fn sts_remaining_seconds(sts: &OssSts) -> Option<i64> {
+pub(crate) fn sts_remaining_seconds(sts: &OssSts) -> Option<i64> {
     let expiration = DateTime::parse_from_rfc3339(&sts.expiration).ok()?;
     Some(expiration.timestamp() - Utc::now().timestamp())
 }
@@ -384,7 +384,7 @@ pub(crate) fn wait_for_remote_push_doc_ready_with_endpoints(
     Err(last_err.unwrap_or_else(|| ApiError::protocol("推送消息未能及时同步到 neocloud")))
 }
 
-fn update_push_doc_for_resend_at(
+pub(crate) fn update_push_doc_for_resend_at(
     doc: &mut Value,
     signed_url: &str,
     now_ms: u64,
@@ -770,6 +770,7 @@ pub fn push_resend_with_auth(
 /// Distinguish rejected preparation from a write whose result is unconfirmed.
 #[derive(Debug)]
 pub enum ResendError {
+    Cancelled,
     BeforeSubmission(ApiError),
     AfterSubmission(ApiError),
 }
@@ -784,6 +785,7 @@ impl From<ApiError> for ResendError {
 impl std::fmt::Display for ResendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Cancelled => f.write_str("resend cancelled"),
             Self::BeforeSubmission(error) | Self::AfterSubmission(error) => error.fmt(f),
         }
     }
@@ -843,10 +845,7 @@ pub fn push_resend_with_auth_with_endpoints(
                         .unwrap_or("{}"),
                 )
                 .map_err(|_| ApiError::protocol("推送记录 content 解析失败"))?;
-                let resource_type = content
-                    .get("format")
-                    .and_then(Value::as_str)
-                    .unwrap_or("pdf");
+                let resource_type = resend_fallback_resource_type(&content);
                 put_push_message_doc_with_endpoints(
                     endpoints,
                     client,
@@ -867,8 +866,15 @@ pub fn push_resend_with_auth_with_endpoints(
     }
 }
 
-fn is_not_found_push_error(error: &ApiError) -> bool {
+pub(crate) fn is_not_found_push_error(error: &ApiError) -> bool {
     error.kind == ApiErrorKind::HttpStatus && error.status == Some(404)
+}
+
+pub(crate) fn resend_fallback_resource_type(content: &Value) -> &str {
+    content
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or("pdf")
 }
 
 pub fn dashboard_push_delete_inner(doc_id: &str) -> Result<(), String> {

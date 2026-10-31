@@ -1,8 +1,9 @@
+use boox_core::dashboard::DashboardRefreshInput;
 use boox_core::models::{
     CalibreBookSummary, CalibreConnectionState, DashboardSnapshot,
     ZoteroConnectionState, ZoteroItemSummary,
 };
-use boox_core::util::unix_ms_now;
+use boox_core::util::{today_ymd, unix_ms_now};
 use gpui::*;
 use std::time::Duration;
 
@@ -154,19 +155,36 @@ impl AppState {
         self.is_loading = true;
         cx.notify();
 
+        // The credential and upload projection still come from the legacy
+        // core globals during this migration slice. The dashboard result itself
+        // is explicit: the app owns the snapshot and no core dashboard cache is
+        // written.
+        let input = DashboardRefreshInput::new(
+            boox_core::state::get_auth_state().token.unwrap_or_default(),
+            boox_core::dashboard::current_upload_snapshot(),
+            today_ymd(),
+        );
+
         cx.spawn(async move |this, cx| {
-            let snapshot = cx
+            let result = cx
                 .background_executor()
-                .spawn(async move { boox_core::dashboard::build_dashboard_snapshot() })
+                .spawn(async move { boox_core::dashboard::refresh_dashboard_snapshot(&input) })
                 .await;
 
-            let label = boox_core::dashboard::build_reading_metrics_label(&snapshot);
             let _ = this.update(cx, |state, cx| {
-                boox_core::state::set_dashboard_cache(snapshot.clone());
-                state.snapshot = Some(snapshot);
                 state.is_loading = false;
-                state.last_sync_time_ms = unix_ms_now();
-                crate::tray::update_reading_stats_label(&label);
+                match result {
+                    Ok(next) => {
+                        let label = boox_core::dashboard::build_reading_metrics_label(&next);
+                        state.snapshot = Some(next);
+                        state.last_sync_time_ms = unix_ms_now();
+                        state.status_notification = Some("仪表盘已刷新".to_string());
+                        crate::tray::update_reading_stats_label(&label);
+                    }
+                    Err(error) => {
+                        state.status_notification = Some(format!("刷新失败: {error}"));
+                    }
+                }
                 cx.notify();
             });
         })

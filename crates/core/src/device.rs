@@ -135,8 +135,7 @@ pub fn build_dashboard_devices(
     }
 
     let mut neighbors = collect_arp_neighbors();
-    let items = value_to_array(raw);
-    let target_macs = items
+    let target_macs = value_to_array(raw.clone())
         .iter()
         .filter_map(|item| {
             json_field_to_string(item, "macAddress").or_else(|| json_field_to_string(item, "mac"))
@@ -150,6 +149,25 @@ pub fn build_dashboard_devices(
         neighbors = collect_arp_neighbors();
     }
 
+    build_dashboard_devices_with_environment(raw, share_devices, &local_probe_ips, &neighbors)
+}
+
+/// Maps already-fetched device and transfer-device projections without probing
+/// the local interfaces, ARP table, or network. Used by endpoint-injected
+/// refreshes and tests; production callers use [`build_dashboard_devices`].
+pub fn build_dashboard_devices_pure(
+    raw: Value,
+    share_devices: Vec<ShareTransferDevice>,
+) -> Vec<DashboardDevice> {
+    build_dashboard_devices_with_environment(raw, share_devices, &[], &HashMap::new())
+}
+
+fn build_dashboard_devices_with_environment(
+    raw: Value,
+    share_devices: Vec<ShareTransferDevice>,
+    local_probe_ips: &[Ipv4Addr],
+    neighbors: &HashMap<String, String>,
+) -> Vec<DashboardDevice> {
     let mut share_by_mac = HashMap::new();
     for item in &share_devices {
         if let Some(mac) = item.mac_address.as_deref().and_then(normalize_mac_address) {
@@ -162,6 +180,7 @@ pub fn build_dashboard_devices(
         None
     };
 
+    let items = value_to_array(raw);
     let device_total = items.len();
     let mut devices = Vec::new();
     for item in items {

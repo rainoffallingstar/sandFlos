@@ -1,17 +1,23 @@
 use crate::api::{
-    auth_source_text, create_client, fetch_auth_context_and_user, fetch_day_read, fetch_devices,
-    fetch_push_queue_for_dashboard, fetch_read_time_info, fetch_reading_info, fetch_storage,
+    auth_source_text, create_client, fetch_auth_context_for_token_with_endpoints,
+    fetch_day_read_with_endpoints, fetch_devices_with_endpoints,
+    fetch_push_queue_for_dashboard_with_endpoints, fetch_read_time_info_with_endpoints,
+    fetch_reading_info_with_endpoints, ApiEndpoints, ApiError, ApiErrorKind,
 };
-use crate::device::{build_dashboard_devices, fetch_share_devices};
+use crate::device::{build_dashboard_devices, build_dashboard_devices_pure, fetch_share_devices};
 use crate::models::{
     DashboardAuth, DashboardCalendarMetrics, DashboardProfile, DashboardSnapshot, DashboardStorage,
-    DashboardUploadState,
+    DashboardUploadState, ShareTransferDevice,
 };
-use crate::state::{get_dashboard_cache, get_upload_runtime_state, set_dashboard_cache};
+use crate::state::{
+    get_auth_state, get_dashboard_cache, get_upload_runtime_state, set_dashboard_cache,
+};
 use crate::util::{
-    parse_u64_field, reading_today_count, reading_total_count, reading_week_total_ms,
+    normalize_optional, reading_today_count, reading_total_count, reading_week_total_ms,
     short_duration_text, today_ymd, unix_ms_now,
 };
+use serde::Serialize;
+use std::fmt;
 
 pub const DASHBOARD_CACHE_MAX_AGE_MS: u128 = 5_000;
 
@@ -28,6 +34,145 @@ pub fn app_status() -> AppStatus {
         version: "0.1.0".to_string(),
         unix_ms: unix_ms_now(),
     }
+}
+
+/// Failure category for an explicit desktop dashboard refresh.
+///
+/// The message and numeric fields come from the shared API boundary and never
+/// include response bodies or credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DashboardErrorKind {
+    Input,
+    Authentication,
+    Network,
+    Business,
+    Protocol,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DashboardError {
+    pub kind: DashboardErrorKind,
+    pub stage: &'static str,
+    pub status: Option<u16>,
+    pub result_code: Option<i64>,
+    pub message: String,
+}
+
+impl DashboardError {
+    pub fn authentication(stage: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: DashboardErrorKind::Authentication,
+            stage,
+            status: None,
+            result_code: None,
+            message: message.into(),
+        }
+    }
+
+    pub fn input(stage: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: DashboardErrorKind::Input,
+            stage,
+            status: None,
+            result_code: None,
+            message: message.into(),
+        }
+    }
+
+    fn from_api(stage: &'static str, error: ApiError) -> Self {
+        let kind = match error.kind {
+            ApiErrorKind::Input => DashboardErrorKind::Input,
+            ApiErrorKind::Authentication => DashboardErrorKind::Authentication,
+            ApiErrorKind::Timeout | ApiErrorKind::Network => DashboardErrorKind::Network,
+            ApiErrorKind::HttpStatus => match error.status {
+                Some(401 | 403) => DashboardErrorKind::Authentication,
+                _ => DashboardErrorKind::Network,
+            },
+            ApiErrorKind::Business => DashboardErrorKind::Business,
+            ApiErrorKind::Protocol => DashboardErrorKind::Protocol,
+        };
+        Self {
+            kind,
+            stage,
+            status: error.status,
+            result_code: error.result_code,
+            message: error.message,
+        }
+    }
+}
+
+impl fmt::Display for DashboardError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DashboardError {}
+
+/// Explicit inputs for a desktop dashboard refresh.
+///
+/// The caller owns the credential and upload projection. The refresh does not
+/// read or write the process-global auth, upload, or dashboard cache state.
+/// `share_devices` is the caller's transfer-device projection. The
+/// endpoint-injected entry point requires it and never performs a production
+/// WebSocket lookup or LAN probe. The production entry point consumes the
+/// supplied projection when present and otherwise performs the production share
+/// lookup. `today` is the caller's local date, used for both reading-statistics
+/// requests.
+pub struct DashboardRefreshInput {
+    pub token: String,
+    pub upload: DashboardUploadState,
+    pub share_devices: Option<Vec<ShareTransferDevice>>,
+    pub today: String,
+}
+
+impl DashboardRefreshInput {
+    pub fn new(
+        token: impl Into<String>,
+        upload: DashboardUploadState,
+        today: impl Into<String>,
+    ) -> Self {
+        Self {
+            token: token.into(),
+            upload,
+            share_devices: None,
+            today: today.into(),
+        }
+    }
+
+    pub fn with_share_devices(mut self, share_devices: Vec<ShareTransferDevice>) -> Self {
+        self.share_devices = Some(share_devices);
+        self
+    }
+}
+
+impl fmt::Debug for DashboardRefreshInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DashboardRefreshInput")
+            .field("token", &"<redacted>")
+            .field("upload", &self.upload)
+            .field("share_devices", &self.share_devices)
+            .field("today", &self.today)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FetchPolicy {
+    Strict,
+    Legacy,
+}
+
+enum ShareProjection {
+    Explicit(Vec<ShareTransferDevice>),
+    Production,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeviceEnvironmentSource {
+    Pure,
+    System,
 }
 
 pub fn current_upload_snapshot() -> DashboardUploadState {
@@ -67,45 +212,136 @@ fn unauthorized_dashboard_snapshot(reason: String) -> DashboardSnapshot {
     }
 }
 
-pub fn build_dashboard_snapshot() -> DashboardSnapshot {
-    let client = match create_client(30) {
-        Ok(client) => client,
-        Err(err) => {
-            return unauthorized_dashboard_snapshot(format!("创建网络客户端失败: {err}"));
-        }
-    };
+/// Fetches a desktop dashboard using an explicit endpoint context and explicit
+/// credential, upload, and transfer-device projections.
+///
+/// This entry point is side-effect free beyond the HTTP requests: it never
+/// reads global auth/upload/cache state, performs a production share WebSocket
+/// lookup, or probes the local LAN. `share_devices` is required.
+pub fn fetch_dashboard_snapshot_with_endpoints(
+    endpoints: &ApiEndpoints,
+    client: &reqwest::blocking::Client,
+    input: &DashboardRefreshInput,
+) -> Result<DashboardSnapshot, DashboardError> {
+    let share_devices = input.share_devices.clone().ok_or_else(|| {
+        DashboardError::input(
+            "devices",
+            "endpoint-injected dashboard refresh requires a share_devices projection",
+        )
+    })?;
+    assemble_dashboard(
+        endpoints,
+        client,
+        input,
+        FetchPolicy::Strict,
+        ShareProjection::Explicit(share_devices),
+        DeviceEnvironmentSource::Pure,
+    )
+}
 
-    let (auth, user) = match fetch_auth_context_and_user(&client) {
-        Ok(value) => value,
-        Err(err) => return unauthorized_dashboard_snapshot(err.to_string()),
-    };
+/// Fetches a desktop dashboard against the production endpoints.
+///
+/// The caller provides the credential, upload projection, and local date. The
+/// refresh does not consult the global auth, upload, or dashboard cache state.
+/// When no transfer-device projection is supplied, the production share lookup
+/// and LAN discovery run as in the legacy desktop path.
+pub fn refresh_dashboard_snapshot(
+    input: &DashboardRefreshInput,
+) -> Result<DashboardSnapshot, DashboardError> {
+    assemble_production_dashboard(input, FetchPolicy::Strict)
+}
 
-    let storage_value = fetch_storage(&client, &auth.bearer).unwrap_or(serde_json::Value::Null);
-    let storage_used = parse_u64_field(&storage_value, "usedSize")
-        .or_else(|| parse_u64_field(&storage_value, "used"))
-        .or(auth.storage_used);
-    let storage_limit = parse_u64_field(&storage_value, "totalSize")
-        .or_else(|| parse_u64_field(&storage_value, "storageLimit"))
-        .or(auth.storage_limit);
+fn assemble_production_dashboard(
+    input: &DashboardRefreshInput,
+    policy: FetchPolicy,
+) -> Result<DashboardSnapshot, DashboardError> {
+    let client = create_client(30).map_err(|error| DashboardError::from_api("client", error))?;
+    assemble_dashboard(
+        &ApiEndpoints::production(),
+        &client,
+        input,
+        policy,
+        match &input.share_devices {
+            Some(devices) => ShareProjection::Explicit(devices.clone()),
+            None => ShareProjection::Production,
+        },
+        DeviceEnvironmentSource::System,
+    )
+}
+
+fn optional_statistic(
+    policy: FetchPolicy,
+    stage: &'static str,
+    result: Result<serde_json::Value, ApiError>,
+) -> Result<serde_json::Value, DashboardError> {
+    match (policy, result) {
+        (_, Ok(value)) => Ok(value),
+        (FetchPolicy::Legacy, Err(_)) => Ok(serde_json::Value::Null),
+        (FetchPolicy::Strict, Err(error)) => Err(DashboardError::from_api(stage, error)),
+    }
+}
+
+fn assemble_dashboard(
+    endpoints: &ApiEndpoints,
+    client: &reqwest::blocking::Client,
+    input: &DashboardRefreshInput,
+    policy: FetchPolicy,
+    share_projection: ShareProjection,
+    environment_source: DeviceEnvironmentSource,
+) -> Result<DashboardSnapshot, DashboardError> {
+    let token = normalize_optional(Some(input.token.clone()))
+        .ok_or_else(|| DashboardError::authentication("auth", "当前未登录"))?;
+
+    let (auth, user) = fetch_auth_context_for_token_with_endpoints(endpoints, client, &token)
+        .map_err(|error| DashboardError::from_api("auth", error))?;
+
+    let storage_used = auth.storage_used;
+    let storage_limit = auth.storage_limit;
     let storage_percent = match (storage_used, storage_limit) {
         (Some(used), Some(limit)) if limit > 0 => Some(used as f64 * 100.0 / limit as f64),
         _ => None,
     };
 
-    let reading_info = fetch_reading_info(&client, &auth.bearer).unwrap_or(serde_json::Value::Null);
-    let today = today_ymd();
-    let read_time_week = fetch_read_time_info(&client, &auth.bearer, &today, "week")
-        .unwrap_or(serde_json::Value::Null);
-    let day_read_today =
-        fetch_day_read(&client, &auth.bearer, &today, &today).unwrap_or(serde_json::Value::Null);
+    let reading_info = optional_statistic(
+        policy,
+        "reading_info",
+        fetch_reading_info_with_endpoints(endpoints, client, &auth.bearer),
+    )?;
+    let read_time_week = optional_statistic(
+        policy,
+        "read_time_week",
+        fetch_read_time_info_with_endpoints(endpoints, client, &auth.bearer, &input.today, "week"),
+    )?;
+    let day_read_today = optional_statistic(
+        policy,
+        "day_read_today",
+        fetch_day_read_with_endpoints(endpoints, client, &auth.bearer, &input.today, &input.today),
+    )?;
 
-    let raw_devices = fetch_devices(&client, &auth.bearer).unwrap_or(serde_json::Value::Null);
-    let share_devices = fetch_share_devices(&auth.uid);
-    let devices = build_dashboard_devices(raw_devices, share_devices);
+    let raw_devices = optional_statistic(
+        policy,
+        "devices",
+        fetch_devices_with_endpoints(endpoints, client, &auth.bearer),
+    )?;
+    let share_devices = match share_projection {
+        ShareProjection::Explicit(devices) => devices,
+        ShareProjection::Production => fetch_share_devices(&auth.uid),
+    };
+    let devices = match environment_source {
+        DeviceEnvironmentSource::Pure => build_dashboard_devices_pure(raw_devices, share_devices),
+        DeviceEnvironmentSource::System => build_dashboard_devices(raw_devices, share_devices),
+    };
 
-    let push_queue = fetch_push_queue_for_dashboard(&client, &auth).unwrap_or_default();
+    let queue_result = fetch_push_queue_for_dashboard_with_endpoints(endpoints, client, &auth);
+    let push_queue = match (policy, queue_result) {
+        (_, Ok(items)) => items,
+        (FetchPolicy::Legacy, Err(_)) => Vec::new(),
+        (FetchPolicy::Strict, Err(error)) => {
+            return Err(DashboardError::from_api("queue", error));
+        }
+    };
 
-    DashboardSnapshot {
+    Ok(DashboardSnapshot {
         auth: DashboardAuth {
             authorized: true,
             source: auth_source_text(&auth),
@@ -130,8 +366,27 @@ pub fn build_dashboard_snapshot() -> DashboardSnapshot {
             read_time_week,
             day_read_today,
         },
-        upload: current_upload_snapshot(),
+        upload: input.upload.clone(),
         fetched_at_ms: unix_ms_now(),
+    })
+}
+
+/// Compatibility entry point for existing global-state desktop callers.
+///
+/// It still reads the legacy credential and upload projection and keeps the
+/// historical soft-failure behavior: statistics and device failures become
+/// `null`/empty device projections and a failed queue request becomes an empty
+/// list. The production share lookup and LAN probing remain enabled. New
+/// desktop refresh code uses [`refresh_dashboard_snapshot`] instead.
+pub fn build_dashboard_snapshot() -> DashboardSnapshot {
+    let token = match get_auth_state().token {
+        Some(token) => token,
+        None => return unauthorized_dashboard_snapshot("当前未登录".to_string()),
+    };
+    let input = DashboardRefreshInput::new(token, current_upload_snapshot(), today_ymd());
+    match assemble_production_dashboard(&input, FetchPolicy::Legacy) {
+        Ok(snapshot) => snapshot,
+        Err(error) => unauthorized_dashboard_snapshot(error.to_string()),
     }
 }
 

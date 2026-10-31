@@ -1,5 +1,6 @@
 use crate::api::{
-    check_qr_login, create_client, create_qr_login, send_verify_code, signup_by_phone_or_email,
+    check_qr_login_at, create_client, create_qr_login_at, send_verify_code_with_endpoints,
+    signup_by_phone_or_email_with_endpoints, ApiEndpoints,
 };
 use crate::models::{PhoneOrEmailLoginRequest, QrCheckResponse, VerifyCodeRequest};
 use crate::state::{set_auth_state, LoginPortalState};
@@ -9,8 +10,12 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -20,65 +25,287 @@ const WECHAT_LOGIN_SCOPE: &str = "snsapi_login";
 const WECHAT_LOGIN_REDIRECT_URI: &str = "https://send2boox.com/api/1/passport/wechat/pc/login";
 const WECHAT_LOGIN_SOCKET_URL: &str = "wss://send2boox.com/ws/socketio/";
 const WECHAT_LOGIN_STATE_PREFIX: &str = "bind_login_";
+const PORTAL_READ_POLL: Duration = Duration::from_millis(50);
+const PORTAL_REQUEST_HEAD_DEADLINE: Duration = Duration::from_secs(2);
+const PORTAL_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
+/// Owned portal retained by the legacy `start_login_flow` adapter. Replacing
+/// this entry joins the previous portal before the new one becomes visible.
+fn legacy_portal_holder() -> &'static Mutex<Option<LoginPortal>> {
+    static HOLDER: OnceLock<Mutex<Option<LoginPortal>>> = OnceLock::new();
+    HOLDER.get_or_init(|| Mutex::new(None))
+}
+
+/// Owned browser-login portal.
+///
+/// The application supplies the URL opener and the token delivery callback.
+/// The callback is the only successful-login delivery path and is invoked at
+/// most once unless it returns an error, in which case a browser retry may
+/// deliver the same token again.
+///
+/// Token callbacks run synchronously on the portal worker and must return
+/// within a short bounded duration. Shutdown joins that worker, so a callback
+/// that blocks indefinitely also blocks shutdown; callbacks must not wait for
+/// unbounded persistence or network work.
+///
+/// Dropping or calling [`LoginPortal::shutdown`] stops the listener and joins
+/// the worker. Portal-owned request reads and response writes have short
+/// deadlines and repeatedly observe the stop flag. An upstream login request
+/// already in progress is bounded only by its existing 20-second HTTP timeout.
+pub struct LoginPortal {
+    port: u16,
+    expected_state: String,
+    stop: Arc<AtomicBool>,
+    delivery: Arc<TokenDelivery>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl LoginPortal {
+    pub fn start<F, D>(open_url: F, deliver_token: D) -> Result<Self, String>
+    where
+        F: Fn(&str) -> Result<(), String> + Send + Sync + 'static,
+        D: Fn(String) -> Result<(), String> + Send + Sync + 'static,
+    {
+        Self::start_configured(open_url, deliver_token, ApiEndpoints::production(), false)
+    }
+
+    /// Starts a portal against explicit service origins. Applications normally
+    /// use [`LoginPortal::start`]; this variant exists for callers that need a
+    /// non-default deployment and for loopback integration tests.
+    pub fn start_with_endpoints<F, D>(
+        open_url: F,
+        deliver_token: D,
+        endpoints: ApiEndpoints,
+    ) -> Result<Self, String>
+    where
+        F: Fn(&str) -> Result<(), String> + Send + Sync + 'static,
+        D: Fn(String) -> Result<(), String> + Send + Sync + 'static,
+    {
+        Self::start_configured(open_url, deliver_token, endpoints, false)
+    }
+
+    fn start_configured<F, D>(
+        open_url: F,
+        deliver_token: D,
+        endpoints: ApiEndpoints,
+        clear_global_on_close: bool,
+    ) -> Result<Self, String>
+    where
+        F: Fn(&str) -> Result<(), String> + Send + Sync + 'static,
+        D: Fn(String) -> Result<(), String> + Send + Sync + 'static,
+    {
+        let login_nonce = Uuid::new_v4().to_string();
+        let state = build_wechat_login_state(&login_nonce);
+        let listener = TcpListener::bind("127.0.0.1:0").map_err(|err| err.to_string())?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|err| err.to_string())?;
+        let port = listener.local_addr().map_err(|err| err.to_string())?.port();
+
+        let state_for_server = state.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_worker = stop.clone();
+        let delivery = Arc::new(TokenDelivery::new(deliver_token));
+        let delivery_for_worker = delivery.clone();
+        let worker = thread::spawn(move || {
+            serve_login_portal(
+                listener,
+                state_for_server,
+                delivery_for_worker,
+                stop_for_worker,
+                endpoints,
+                clear_global_on_close,
+            )
+        });
+
+        let bridge_url = format!("http://127.0.0.1:{port}/auth/start?state={state}");
+        if let Err(err) = open_url(&bridge_url) {
+            delivery.request_stop(&stop);
+            let _ = worker.join();
+            return Err(err);
+        }
+        Ok(Self {
+            port,
+            expected_state: state,
+            stop,
+            delivery,
+            worker: Some(worker),
+        })
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn bridge_url(&self) -> String {
+        format!(
+            "http://127.0.0.1:{}/auth/start?state={}",
+            self.port, self.expected_state
+        )
+    }
+
+    pub fn shutdown(self) {
+        drop(self);
+    }
+
+    fn stop_and_join(&mut self) {
+        // Serialize the stop flag with delivery. A callback already running is
+        // allowed to finish (its bounded return is part of the public
+        // contract), but no new callback can begin after this store.
+        self.delivery.request_stop(&self.stop);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for LoginPortal {
+    fn drop(&mut self) {
+        self.stop_and_join();
+    }
+}
+
+type TokenCallback = dyn Fn(String) -> Result<(), String> + Send + Sync + 'static;
+
+struct TokenDelivery {
+    callback: Box<TokenCallback>,
+    delivered: AtomicBool,
+    gate: Mutex<()>,
+}
+
+impl TokenDelivery {
+    fn request_stop(&self, stop: &AtomicBool) {
+        let _guard = self.gate.lock();
+        stop.store(true, Ordering::Release);
+    }
+
+    fn new<D>(callback: D) -> Self
+    where
+        D: Fn(String) -> Result<(), String> + Send + Sync + 'static,
+    {
+        Self {
+            callback: Box::new(callback),
+            delivered: AtomicBool::new(false),
+            gate: Mutex::new(()),
+        }
+    }
+
+    /// Delivers a token unless an earlier delivery already succeeded. A failed
+    /// callback remains retryable; callback error text is intentionally
+    /// discarded so it cannot reach the browser response.
+    fn deliver(&self, token: String, stop: &AtomicBool) -> Result<(), ()> {
+        let _guard = self.gate.lock().map_err(|_| ())?;
+        if stop.load(Ordering::Acquire) {
+            return Err(());
+        }
+        if self.delivered.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        (self.callback)(token).map_err(|_| ())?;
+        self.delivered.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+/// Compatibility entry point that keeps the old global-auth behavior.
 pub fn start_login_flow<F>(open_url: F) -> Result<(), String>
 where
     F: Fn(&str) -> Result<(), String> + Send + Sync + 'static,
 {
-    let login_nonce = Uuid::new_v4().to_string();
-    let state = build_wechat_login_state(&login_nonce);
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|err| err.to_string())?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|err| err.to_string())?;
-    let port = listener.local_addr().map_err(|err| err.to_string())?.port();
-
+    let portal = LoginPortal::start_configured(
+        open_url,
+        |token| {
+            set_auth_state(Some(token));
+            Ok(())
+        },
+        ApiEndpoints::production(),
+        true,
+    )?;
+    let state = portal.expected_state.clone();
+    let port = portal.port;
+    let previous = legacy_portal_holder()
+        .lock()
+        .map_err(|_| "登录服务状态不可用".to_string())?
+        .replace(portal);
+    // Joining happens outside the holder lock. The old worker may clear the
+    // old global metadata, so publish the replacement metadata afterwards.
+    drop(previous);
     if let Ok(mut login_portal) = crate::state::global_state().login_portal.lock() {
         *login_portal = Some(LoginPortalState {
-            _state: state.clone(),
+            _state: state,
             _port: port,
             _started_ms: unix_ms_now(),
         });
     }
-
-    let state_for_server = state.clone();
-    thread::spawn(move || serve_login_portal(listener, state_for_server));
-
-    let bridge_url = format!("http://127.0.0.1:{port}/auth/start?state={state}");
-    if let Err(err) = open_url(&bridge_url) {
-        clear_login_portal();
-        return Err(err);
-    }
     Ok(())
 }
 
-fn serve_login_portal(listener: TcpListener, expected_state: String) {
+fn serve_login_portal(
+    listener: TcpListener,
+    expected_state: String,
+    delivery: Arc<TokenDelivery>,
+    stop: Arc<AtomicBool>,
+    endpoints: ApiEndpoints,
+    clear_global_on_close: bool,
+) {
     let started_at = unix_ms_now();
     loop {
-        if unix_ms_now().saturating_sub(started_at) > LOGIN_PORTAL_TTL_MS {
-            clear_login_portal();
+        if stop.load(Ordering::Acquire)
+            || unix_ms_now().saturating_sub(started_at) > LOGIN_PORTAL_TTL_MS
+        {
+            if clear_global_on_close {
+                clear_login_portal();
+            }
             return;
         }
 
         match listener.accept() {
-            Ok((stream, _)) => handle_connection(stream, &expected_state),
+            Ok((stream, _)) => {
+                if stop.load(Ordering::Acquire) {
+                    if clear_global_on_close {
+                        clear_login_portal();
+                    }
+                    return;
+                }
+                handle_connection(
+                    stream,
+                    &expected_state,
+                    &delivery,
+                    stop.as_ref(),
+                    &endpoints,
+                    clear_global_on_close,
+                );
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(60));
+                thread::sleep(Duration::from_millis(10));
             }
             Err(_) => {
-                clear_login_portal();
+                if clear_global_on_close {
+                    clear_login_portal();
+                }
                 return;
             }
         }
     }
 }
 
-fn handle_connection(mut stream: TcpStream, expected_state: &str) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let request = match read_request_head(&mut stream) {
+fn handle_connection(
+    mut stream: TcpStream,
+    expected_state: &str,
+    delivery: &TokenDelivery,
+    stop: &AtomicBool,
+    endpoints: &ApiEndpoints,
+    clear_global_on_close: bool,
+) {
+    let _ = stream.set_read_timeout(Some(PORTAL_READ_POLL));
+    let _ = stream.set_write_timeout(Some(PORTAL_WRITE_TIMEOUT));
+    let request = match read_request_head(&mut stream, stop) {
         Ok(text) => text,
         Err(_) => return,
     };
+    if stop.load(Ordering::Acquire) {
+        return;
+    }
     let Some(first_line) = request.lines().next() else {
         return;
     };
@@ -115,7 +342,9 @@ fn handle_connection(mut stream: TcpStream, expected_state: &str) {
             login_page_html(expected_state),
         ),
         "/auth/qrcode/create" => {
-            let body = match create_client(20).and_then(|client| create_qr_login(&client)) {
+            let body = match create_client(20)
+                .and_then(|client| create_qr_login_at(&client, endpoints.api_base()))
+            {
                 Ok(data) => match render_qr_svg(&data.qrcode_data) {
                     Ok(qrcode_svg) => serde_json::json!({
                         "ok": true,
@@ -140,11 +369,24 @@ fn handle_connection(mut stream: TcpStream, expected_state: &str) {
             let body = if qrcode_id.trim().is_empty() {
                 serde_json::json!({ "ok": false, "error": "missing qrcodeId" }).to_string()
             } else {
-                match create_client(20).and_then(|client| check_qr_login(&client, &qrcode_id)) {
+                match create_client(20)
+                    .and_then(|client| check_qr_login_at(&client, endpoints.api_base(), &qrcode_id))
+                {
                     Ok(result) => {
                         if result.status == 1 {
                             if let Some(token) = extract_qr_login_token(&result) {
-                                set_auth_state(Some(token));
+                                if delivery.deliver(token, stop).is_err() {
+                                    return write_response(
+                                        &mut stream,
+                                        "200 OK",
+                                        "application/json; charset=utf-8",
+                                        serde_json::json!({
+                                            "ok": false,
+                                            "error": "无法保存登录凭据，请重试"
+                                        })
+                                        .to_string(),
+                                    );
+                                }
                             } else {
                                 return write_response(
                                     &mut stream,
@@ -175,15 +417,16 @@ fn handle_connection(mut stream: TcpStream, expected_state: &str) {
             );
         }
         "/auth/wechat/callback" => {
-            let token = params.get("token").cloned().unwrap_or_default();
-            let body = if token.trim().is_empty() {
+            let token = normalized_query_value(&params, "token").unwrap_or_default();
+            let body = if token.is_empty() {
                 serde_json::json!({
                     "ok": false,
                     "error": "missing token"
                 })
                 .to_string()
+            } else if delivery.deliver(token, stop).is_err() {
+                serde_json::json!({ "ok": false, "error": "无法保存登录凭据，请重试" }).to_string()
             } else {
-                set_auth_state(Some(token));
                 serde_json::json!({ "ok": true }).to_string()
             };
             write_response(
@@ -194,7 +437,7 @@ fn handle_connection(mut stream: TcpStream, expected_state: &str) {
             );
         }
         "/auth/login/send-code" => {
-            let body = match handle_send_code_request(&params) {
+            let body = match handle_send_code_request(&params, endpoints) {
                 Ok(()) => serde_json::json!({ "ok": true }).to_string(),
                 Err(err) => serde_json::json!({ "ok": false, "error": err }).to_string(),
             };
@@ -206,7 +449,7 @@ fn handle_connection(mut stream: TcpStream, expected_state: &str) {
             );
         }
         "/auth/login/submit" => {
-            let body = match handle_phone_or_email_login(&params) {
+            let body = match handle_phone_or_email_login(&params, delivery, stop, endpoints) {
                 Ok(()) => serde_json::json!({ "ok": true }).to_string(),
                 Err(err) => serde_json::json!({ "ok": false, "error": err }).to_string(),
             };
@@ -218,7 +461,9 @@ fn handle_connection(mut stream: TcpStream, expected_state: &str) {
             );
         }
         "/auth/callback" => {
-            clear_login_portal();
+            if clear_global_on_close {
+                clear_login_portal();
+            }
 
             write_response(
                 &mut stream,
@@ -245,20 +490,40 @@ fn clear_login_portal() {
     }
 }
 
-fn read_request_head(stream: &mut TcpStream) -> Result<String, String> {
+fn read_request_head(stream: &mut TcpStream, stop: &AtomicBool) -> Result<String, String> {
+    let deadline = Instant::now() + PORTAL_REQUEST_HEAD_DEADLINE;
     let mut buffer = [0_u8; 4096];
     let mut request = Vec::new();
     loop {
-        let read = stream.read(&mut buffer).map_err(|err| err.to_string())?;
-        if read == 0 {
-            break;
+        if stop.load(Ordering::Acquire) {
+            return Err("portal stopped".to_string());
         }
-        request.extend_from_slice(&buffer[..read]);
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => request.extend_from_slice(&buffer[..read]),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err("request head deadline exceeded".to_string());
+                }
+                continue;
+            }
+            Err(err) => return Err(err.to_string()),
+        }
         if request.windows(4).any(|window| window == b"\r\n\r\n") {
             break;
         }
         if request.len() > 32 * 1024 {
             break;
+        }
+        if Instant::now() >= deadline {
+            return Err("request head deadline exceeded".to_string());
         }
     }
     String::from_utf8(request).map_err(|err| err.to_string())
@@ -406,18 +671,27 @@ fn login_request_from_params(
     })
 }
 
-fn handle_send_code_request(params: &HashMap<String, String>) -> Result<(), String> {
+fn handle_send_code_request(
+    params: &HashMap<String, String>,
+    endpoints: &ApiEndpoints,
+) -> Result<(), String> {
     let payload = verify_code_request_from_params(params)?;
     let client = create_client(20)?;
-    send_verify_code(&client, &payload).map_err(|error| error.to_string())
+    send_verify_code_with_endpoints(endpoints, &client, &payload).map_err(|error| error.to_string())
 }
 
-fn handle_phone_or_email_login(params: &HashMap<String, String>) -> Result<(), String> {
+fn handle_phone_or_email_login(
+    params: &HashMap<String, String>,
+    delivery: &TokenDelivery,
+    stop: &AtomicBool,
+    endpoints: &ApiEndpoints,
+) -> Result<(), String> {
     let payload = login_request_from_params(params)?;
     let client = create_client(20)?;
-    let token = signup_by_phone_or_email(&client, &payload)?;
-    set_auth_state(Some(token));
-    Ok(())
+    let token = signup_by_phone_or_email_with_endpoints(endpoints, &client, &payload)?;
+    delivery
+        .deliver(token, stop)
+        .map_err(|_| "无法保存登录凭据，请重试".to_string())
 }
 
 fn wechat_socket_state(state: &str) -> &str {

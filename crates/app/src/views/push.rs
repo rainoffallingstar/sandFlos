@@ -11,12 +11,12 @@ use gpui_component::{
 };
 
 pub fn render_push_view(state_entity: &Entity<AppState>, cx: &mut App) -> impl IntoElement {
-    let (push_queue, active_upload) = {
+    let (has_snapshot, is_loading, push_queue, active_upload) = {
         let state = state_entity.read(cx);
         let snapshot = state.snapshot.as_ref();
         let queue = snapshot.map(|s| s.push_queue.clone()).unwrap_or_default();
         let up = snapshot.map(|s| s.upload.clone()).filter(|u| u.in_progress || u.last_error.is_some());
-        (queue, up)
+        (snapshot.is_some(), state.is_loading, queue, up)
     };
 
     v_flex()
@@ -29,7 +29,11 @@ pub fn render_push_view(state_entity: &Entity<AppState>, cx: &mut App) -> impl I
                 .items_center()
                 .child(
                     v_flex()
-                        .child(Label::new(format!("互动文件队列 ({} 项)", push_queue.len())).font_bold().text_base())
+                        .child(Label::new(if has_snapshot {
+                            format!("互动文件队列 ({} 项)", push_queue.len())
+                        } else {
+                            "互动文件队列".to_string()
+                        }).font_bold().text_base())
                         .child(Label::new("管理已推送到云端及各 BOOX 设备的书籍与文档").text_xs().text_color(cx.theme().muted_foreground))
                 )
                 .child({
@@ -107,7 +111,23 @@ pub fn render_push_view(state_entity: &Entity<AppState>, cx: &mut App) -> impl I
                 .flex_col()
                 .gap_2()
                 .child(
-                    if push_queue.is_empty() {
+                    if !has_snapshot {
+                        div()
+                            .p_8()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                Label::new(if is_loading {
+                                    "正在读取互动文件队列…"
+                                } else {
+                                    "尚未取得队列数据，请查看刷新提示后重试"
+                                })
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground),
+                            )
+                            .into_any_element()
+                    } else if push_queue.is_empty() {
                         div()
                             .p_8()
                             .flex()

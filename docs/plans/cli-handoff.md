@@ -1,5 +1,86 @@
 # CLI 改造交班记录
 
+## 2026-10-31 最新续实施：桌面刷新显式输入与错误保留
+
+从已完成queue取消的状态继续，保留此前六片，不重复实施。DeepSeek V4.1 Flash（high）完成实现及审查修订，父负责串联、独立复核、双轴审查和本机集成。HEAD仍 `3cc6fb7f29167bd722487c5fde0008c29f3f63ae`，代码保留工作区，未commit/push/tag/release，未使用真实业务账号、凭据或书库。
+
+本片为桌面状态迁移第一步：新 `DashboardRefreshInput` 显式提供token、上传/互传投影、本地日期；严格刷新返回类型化Result，queue/阅读/device请求失败不再变成成功空数据。app实际调用新入口，失败保留旧快照及同步时间并通知，成功更新app快照与托盘，不写core dashboard cache；首次未取得队列数据不会显示“队列为空”。端点注入路径缺share投影时零请求拒绝，纯device映射不触发生产WS或LAN探测；生产wrapper及旧兼容入口保留原能力，映射逻辑共享。
+
+新增12项公共回环HTTP回归。**父完整 `CARGO_NET_OFFLINE=true bash scripts/check_cli.sh` 返回0：267项Rust、7项Python，0失败**；fmt、严格clippy、release、依赖边界、无显示启动、打包及产物运行全通过。日志 `/tmp/sandflos-cli-desktop-refresh-final-check.log`。统一检查后仅修测试全局cache原值恢复；随后父重跑12项公共回归（0.20秒）、core all-targets严格clippy及core/CLI fmt全部通过，日志 `/tmp/sandflos-desktop-refresh-targeted.log`；产品代码未再更改。未重跑200MiB性能。
+
+TDD：首位writer报告曾观察提取后queue503仍返回authorized空快照的行为Red，但父未取得原始运行日志，因此标记“已报告、未独立核实”，不称父已验证test-first。最终Green不能重建Red，未回滚代码补造历史；后续共享机制/审查修订均直接Green，详见 `tdd-desktop-refresh.md`。双轴静态审查无确认硬规范或方案缺陷；规范轴的cache恢复维护发现已修复并定向复验，详见 `cli-desktop-refresh-standards-review.md`、`cli-desktop-refresh-spec-review.md`。
+
+桌面 `cargo check --locked -p send2boox-desktop-gpui` 离线尝试返回101：缺缓存 `aes v0.8.4`，未进入app类型检查。日志 `/tmp/sandflos-desktop-refresh-app-check.log`。此前writer网络尝试亦报告配置registry不可达；不能声称当前桌面构建/macOS人工通过。
+
+GitHub只读复核：cli远端HEAD仍3cc6fb7；最新run41024736353对应旧c460ab6、completed/success（历史7/7）。当前工作区无对应CI；AGENTS禁止commit/push，本轮不执行。**本片刷新实现与CLI本机验收完成，整体计划未全部完成**：app仍以旧global helper取得credential/upload投影，登录持久化、上传互斥/进度、queue修改和Calibre/Zotero最终上传尚需迁移；登录上游/旧桌面阻塞、DNS/连接建立、当前变更三平台CI与真实平台/生产/设备/tag链路验收保留。下一步及重构边界见 `cli-next-steps-and-debt.md`。下文均为历史。
+
+
+## 2026-10-31 最新续实施：queue取消与unknown
+
+继续使用DeepSeek V4.1 Flash（high）实施，父集成与双轴审查。基线仍3cc6fb7，工作区未提交/推送，无真实账号凭据书库/tag/release操作。此前五片不重做。
+
+queue list/resend/delete及认证/准备阶段已使用owned async取消；复用原URL、信封、cookie、签名及同步helper。写前取消130；已发出写入但未确认返回unknown6，不盲重试；已确认成功保留。parent同步期间取消为unknown，明确PUT404后重置写入标记，fallback实际PUT时重新置位。删除第一步确认后取消保留已完成部分；404幂等及明确认证/业务错误类别保留。用户timeout不缩短，无detached blockingworker。
+
+真实Red：_changes请求已收到后SIGINT仍触发8秒watchdog；最小Green约0.29秒。新增23项公共测试，其余共享机制/父审查修订为直接Green；夹具及中间构造错误不冒充产品Red。fixture有绝对read截止、写超时、drain/join和child回收。详见tdd-queue-cancel.md。父发现并关闭nested runtime、parent取消误归Input、明确404后fallback写入状态三项问题。规范轴无确认违反，3项维护判断留档；方案轴的TDD交付缺口已关闭，父分支复核补充记录见cli-queue-spec-review.md。
+
+最终 `CARGO_NET_OFFLINE=true bash scripts/check_cli.sh` 返回0：**255项Rust、7项Python，0失败**，fmt、strictclippy、release、依赖边界、无显示启动、打包及产物运行通过。新增queue23项统一检查1.42秒通过。日志 `/tmp/sandflos-cli-queue-final-check.log`。未重跑200MiB性能或桌面人工验收。
+
+GitHub只读复核仍是旧c460ab6/run41024736353成功（7/7），远端HEAD3cc6fb7；当前未提交代码没有对应CI。AGENTS禁止commit/push，本轮未执行。整体仍未完成：桌面app-owned状态迁移与dashboard错误保留、登录上游/旧桌面阻塞路径、DNS/连接建立取消单独验证、当前代码三平台CI与真实平台/生产/设备/tag链路验收。下一步先实施桌面迁移，保留公共兼容入口与用户缓存。详见cli-next-steps-and-debt.md。以下为历史记录。
+
+## 2026-10-31 最新续实施：查询取消与技术债计划
+
+用户再次要求核对进度、TDD、未完成项、技术债及GitHub，父agent按优先级补齐 `HttpQueryBackend` 的查询取消。实施继续使用 **DeepSeek V4.1 Flash（high）**，父agent串联、双轴审查和集成。基线仍为 `3cc6fb7f29167bd722487c5fde0008c29f3f63ae`，全部新代码在工作区；遵守AGENTS的禁止提交/推送约束，无tag/release、真实业务账号、凭据或书库操作。
+
+- users/me身份查询、devices、storage、reading三个顺序请求使用现有owned async runner。请求前及响应后检查取消，取消后不发下一请求；身份查询仍不附带storage。只读查询可丢弃已完成数据返回Cancelled；push已确认写入成功/已知消息身份的契约保持。
+- URL、日期参数与状态优先信封解析由新旧路径共享，保留业务/协议错误类别、脱敏、null和 `timezone:null`，CLI绑定同一SIGINT标志。用户timeout未缩短，无detached blocking worker。
+- 新增11项公共测试：8项真实CLI SIGINT覆盖身份/各查询响应头及身份、storage信封body；1项公开backend预取消，2项先发布取消再释放响应的受控竞态。fixture逐次read检查绝对截止，drain排队连接并真正join线程、回收子进程。
+- 实际Red为devices请求已到达后SIGINT仍触发8秒watchdog；同一用例最小Green约0.43秒。其它用例是共享机制的直接Green回归。父核对原始Red日志，未将编译/setup失败或最终Green反推为Red。见 `tdd-query-cancel.md`。
+
+最终 `CARGO_NET_OFFLINE=true bash scripts/check_cli.sh` **全部通过：232项Rust、7项Python，0失败**；fmt、严格clippy、release、CLI依赖边界、无显示启动、打包及产物运行通过。11项查询测试在统一检查中0.36秒完成。日志 `/tmp/sandflos-cli-query-final-check.log`。没有重跑200MiB性能，也没有执行本轮桌面或真实平台验收。
+
+双轴报告：`cli-query-standards-review.md`、`cli-query-spec-review.md`。规范轴无确认违反，3项维护判断已记录父处置；构造器无用blocking client已删除。方案轴无确认缺陷，父补充query端点body-stall回归并复核fixture生命周期。下一步与技术债优先级见 `cli-next-steps-and-debt.md`：queue取消/unknown → 桌面app-owned状态及dashboard错误保留 → 当前代码三平台CI和人工平台验收；允许必要内部重构，保留公共兼容和用户数据。
+
+GitHub只读复核仍为远端HEAD `3cc6fb7`；最新run `41024736353` 对应 **旧 `c460ab6`，7/7 success，2026-10-30完成**。当前未提交变更没有对应远端SHA/CI，不把旧成功当当前验收。`cli-github-status.md`列出清单。**本次查询切片、本机检查和下一步计划完成，整体计划仍有上述未完成项。** 此前章节均为历史记录，以本节为最新状态。
+
+
+## 2026-10-31 续实施：前置 HTTP 取消（最终本机验收）
+
+用户再次核对进度/TDD/GitHub后，父agent选择交班中的前置HTTP取消缺口继续实施。实施及专项修订使用 **DeepSeek V4.1 Flash（high）**；父agent串联、双轴审查、修正夹具截止时间与受控竞态，并完成集成验收。仍以 `3cc6fb7f29167bd722487c5fde0008c29f3f63ae` 为基线，所有新增代码在工作区，未提交、未推送，无tag/release、真实业务账号/凭据/书库操作。
+
+- `HttpPushBackend` 的 users/me、storage、bucket、STS、签名链接Range GET现使用可取消的owned async future；保持用户请求超时、原有API信封/错误分类、签名算法和最多三次只读重试。每个新请求前检查取消，停止后续阶段和第二文件；旧blocking兼容接口保留。
+- 新增7项公共测试：6项真实CLI SIGINT覆盖五个阶段及API信封body悬停，另1项通过公开backend精确设置取消标志后立即放行成功响应，证明不继续storage。fixture处理已排队连接并真正join全部线程，逐次read检查绝对截止时间。
+- TDD实际test-first Red为最初auth慢请求：目标已收到，SIGINT后8秒watchdog仍超时。其余共享机制用例直接Green；实现后的基线五失败对照和中间信封解析回归分别记录，不冒称逐项test-first。证据见 `tdd-prewrite-cancel.md`。
+
+最终 `CARGO_NET_OFFLINE=true bash scripts/check_cli.sh` **全部通过：221项Rust、7项Python，0失败**；fmt、严格clippy、release、normal依赖边界、无显示启动、打包及产物运行全部通过。日志 `/tmp/sandflos-cli-prewrite-final-check.log`。新增7项最终集成日志 `/tmp/prewrite-parent-integration.log`。没有重跑200MiB性能，也没有将旧测量当作本轮结果。
+
+规范与方案报告分别为 `cli-prewrite-standards-review.md`、`cli-prewrite-spec-review.md`，均有父处置：生命周期、body-stall/取消竞态与helper共享缺口已关闭；已有后写入错误映射重复作为维护判断保留，未扩大其语义变更。
+
+GitHub最终只读复核：远端cli HEAD仍为 `3cc6fb7`，最新run `41024736353` 对应 **旧代码 `c460ab6`，7/7 success**，完成于2026-10-30；不覆盖当前未提交代码。`AGENTS.md`禁止提交/推送，当前变更三平台CI未运行，详见 `cli-github-status.md`。本轮本机实现/检查已完成，**整体清单仍不能标作全部完成**。
+
+剩余：当前变更远端CI；桌面app-owned状态迁移及人工回归；query/queue等其他blocking路径、登录上游和旧桌面兼容路径；DNS/连接建立阶段的系统等待未单独验证；真实平台凭据/扫码、生产BOOX/OSS/WebDAV、设备接收和真实tag事件链。push上述前置HTTP取消本身已补齐，不再整体标为缺失。此前章节为历史证据，以本节为最新状态。
+
+## 同日此前核对：三个切片的进度、TDD 与 GitHub
+
+本轮三个实现切片与审查均已完成，续接没有重复实施或重跑已通过测试。DeepSeek V4.1 Flash（high）核对TDD公开行为Red记录与最终Green证据并修正 `cli-plan-status.md` 的旧CI/进度描述；审计见 `cli-progress-tdd-audit.md`，历史Red仅有文档记录、不能用最终Green日志反推的限制已明示。
+
+只读GitHub查询确认：cli远端HEAD仍为 `3cc6fb7`；最新列出的CLI run `41024736353` 对应旧代码 `c460ab6`，7/7 success（2026-10-30完成）。当前工作区未提交，尚无覆盖新增代码的GitHub CI。详见 `cli-github-status.md`。AGENTS.md明确禁止提交/推送，已请求允许父agent提交推送以完成当前变更远端验收；授权前不执行。**本轮本地实现及检查完成，整体计划和当前变更CI不能标作全部完成。** 桌面迁移与真实平台/生产验收仍是后续范围。
+
+
+## 本轮续实施：登录交付、连续读取进度与后写入取消（2026-10-30）
+
+基线 `3cc6fb7f29167bd722487c5fde0008c29f3f63ae`，仍位于 `cli`，本轮改动保留在工作区，**未提交、未推送**。实施与专项修订使用 DeepSeek V4.1 Flash（high），父 agent 串联、复核与集成。保留了续接时已有的 auth.rs 和三份未跟踪公共测试，没有使用真实账号、凭据、服务器或用户书库；没有 tags/releases。
+
+- `auth::LoginPortal::start` 提供应用显式令牌交付与 owned portal；QR、微信回调、手机/邮箱统一交付，失败可重试、成功一次。shutdown/drop 实际 join；半截请求和旧入口替换均有行为 Red/Green。应用回调必须有界返回；已经开始的上游请求仍可能使 shutdown 等待原有 20 秒请求超时。旧 `start_login_flow` 兼容入口保持。
+- `PushProgress::Read` 与默认兼容的 `PushBackend::upload_with_progress` 接入实际 PushService 和 CLI。25 ms 采样本地读取计数，读取与 OSS 确认分开；16 MiB 慢读有多次单调有界样本，取消后停止回调。独立 HMAC 断言保护 OSS canonical resource；`Uploaded` 仍只在成功响应后产生。
+- `HttpPushBackend` 消息写入、同步确认、最终提交使用 owned async future 取消，25 ms 检查并有最多 100 ms 在途响应收尾窗口；取消后不启动下一网络请求或下一文件。保留已收到 ID/rev 和确认成功，未确认写入/提交仍 unknown，不盲重试。无 detached blocking worker，用户超时原值保留，legacy `core/push.rs` 保持兼容。
+
+本机 Linux 最终 `CARGO_NET_OFFLINE=true bash scripts/check_cli.sh` 通过：**214 项 Rust、7 项 Python，0 失败**；fmt、严格 clippy、release 构建、依赖边界、无显示启动、打包与产物运行全部通过。日志 `/tmp/sandflos-cli-round-check.log`。没有执行新提交的远端三平台 CI，后文旧 run 仅代表旧提交。没有重新测量 200 MiB 性能，不把旧测量冒称本轮实测。
+
+行为证据：`tdd-login-delivery.md`、`tdd-read-progress.md`、`tdd-postwrite-cancel.md`。双轴审查与父处置见 `cli-round-standards-review.md`、`cli-round-spec-review.md`。规范轴由子 agent 返回、父 agent 处置。方案轴最初未及时返回，由父 agent 补验；续接时已由 DeepSeek V4.1 Flash（high）完成独立静态复核并追加报告，未确认本轮范围内缺陷。续接只调整审查/交班文档，未重复实施或重跑已通过的测试，`git diff --check` 通过。规范报告的签名遗漏两项已由最终源码与独立协议测试反证；文档中消息身份的汇总歧义已改正，保留历史 Red 与当前契约的区别。
+
+尚未完成：桌面 app-owned 状态与调用迁移；认证、bucket、STS、签名下载链接等 blocking HTTP 的及时取消；真实平台凭据/扫码/桌面人工回归、生产 BOOX/OSS/WebDAV 与设备接收；本轮三平台 CI。登录与连续进度接口现已补齐，不再将这两项本身标作缺失，但不能据此声称桌面迁移已完成。
+
+
 ## 续实施：上传性能与慢连接取消（2026-10-30）
 
 本轮起点为 `406ef53720dabf1df412359558dc8b8bc2002940`，继续使用 DeepSeek V4.1 Flash（high）子 agent，父 agent 集成审查。**最终代码/测试提交 `c460ab66704e4d253b954fc85d089c420d04a3a8`，对应 CLI run `41024736353`，7/7 成功**，已推送 `origin/cli`。产品实现为 `18d9d55`，`c460ab6` 修复 TCP 分段下的测试前缀读取。其后仅更新交班文档。下方此前的 `db3903b`/run `41014099241` 是历史验收，不能证明本轮改动。

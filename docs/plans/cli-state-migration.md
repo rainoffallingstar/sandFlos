@@ -1,5 +1,11 @@
 # 桌面运行时状态迁移评估
 
+2026-10-31 最新：桌面刷新第一片已完成。新显式token/upload/date/share输入与Result入口保留错误，app失败保留旧snapshot/time并通知、成功更新自身snapshot/tray且不写core cache。端点注入纯设备投影无WS/LAN副作用，生产能力保留。12项公共测试及父完整267Rust/7Python检查通过；GPUI缺aes缓存未完成类型检查。旧credential/upload过渡桥仍在，完整登录/上传会话迁移未完成；下文为历史评估，当前顺序见cli-next-steps-and-debt.md。
+
+2026-10-31 下一步与技术债排序见 `cli-next-steps-and-debt.md`：query、queue取消现已补齐，下一步接续桌面登录持久化、刷新错误、上传互斥与进度迁移。用户允许必要的内部重构；当前仍保留公共兼容入口，不自动删除或改写用户认证缓存。
+
+2026-10-30 续实施更新（工作区，尚未提交）：下文评估时缺少的两条公共接口现已补齐。`auth::LoginPortal::start` 由应用提供令牌交付回调并持有 portal；保存失败可重试、成功只交付一次，shutdown/drop 实际回收线程。`PushProgress::Read` 与 `PushBackend::upload_with_progress` 为真实 PushService/CLI 路径提供有界、单调的本地读取进度，`Uploaded` 仍只表示 OSS 确认。证据见 `tdd-login-delivery.md`、`tdd-read-progress.md`。这些是桌面迁移的前置接口，桌面 app-owned 状态、凭据策略和调用路径尚未迁移；下文的历史评估不应再把接口本身记为缺失。登录上游等待仍可能使 shutdown 等待当前 20 秒请求，应用回调必须有界返回。
+
 日期：2026-10-30。基线：`406ef53720dabf1df412359558dc8b8bc2002940`。范围是本轮 `read_agents_state` 的只读架构评估；除本文件外未修改生产代码、测试或现有文档。环境为 Linux，`rustc 1.97.1`、`cargo 1.97.1`。
 
 ## 结论

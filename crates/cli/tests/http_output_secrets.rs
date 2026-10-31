@@ -20,18 +20,26 @@ fn upload_progress_is_bounded_and_requires_an_oss_acknowledgment() {
         )
         .unwrap();
         let mut uploaded = Vec::new();
-        let report = PushService::new(backend).push_files(&[file], |event| {
-            if let PushProgress::Uploaded {
+        let mut read = Vec::new();
+        let report = PushService::new(backend).push_files(&[file], |event| match event {
+            PushProgress::Read {
                 bytes, total_bytes, ..
-            } = event
-            {
-                uploaded.push((bytes, total_bytes));
-            }
+            } => read.push((bytes, total_bytes)),
+            PushProgress::Uploaded {
+                bytes, total_bytes, ..
+            } => uploaded.push((bytes, total_bytes)),
+            _ => {}
         });
         assert_eq!(uploaded.len(), expected_upload_events);
         for (bytes, total) in uploaded {
             assert_eq!(total, 12);
             assert_eq!(bytes, 12);
+            assert!(bytes <= total);
+        }
+        assert!(!read.is_empty(), "local file reads must be observable");
+        assert!(read.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        for (bytes, total) in read {
+            assert_eq!(total, 12);
             assert!(bytes <= total);
         }
         assert_eq!(report.accepted, expected_upload_events);

@@ -15,6 +15,10 @@ Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固�
 
 退出码：0 成功，1 内部错误，2 参数错误，3 认证错误，4 网络/服务端错误，5 本地配置或 I/O 错误，6 部分完成或结果未知，130 取消。部分完成时检查逐文件结果，避免整批盲目重试造成重复推送。云端接受不等于设备已经下载。
 
+非 JSON 推送进度中的 `read <bytes>/<total> bytes` 表示从本地文件读取的字节；`uploaded` 表示 OSS 已确认上传。读完文件不能证明上传或最终推送成功。进度按时间采样，快速文件可能只出现一次读取事件。
+
+SIGINT 可中断 push 中正在等待的认证、配额、bucket、STS、签名链接校验、OSS 上传、消息写入、同步确认和最终提交；退出 130 并停止后续文件。已收到的消息 ID 和已确认成功仍保留，可能已经写入但未收到确认的结果为 unknown，不自动重试。devices、storage、reading 查询也可取消，停止后续查询请求并返回 `cancelled`。queue list/resend/delete也支持取消：写入前取消返回130，可能写入但未确认则保留unknown/部分结果并返回6，已确认成功保留。登录上游和旧桌面路径的其他阻塞请求仍可能等待当前请求超时；`--timeout` 仍是单次请求超时。
+
 `--config-dir` / `SANDFLOS_CONFIG_DIR` 选择独立配置目录。`SANDFLOS_TOKEN` 为进程级输入，不自动保存；不要把真实 token 放在命令行参数中。默认使用 macOS Keychain / Windows Credential Manager；Linux 等没有持久后端的环境会明确报错，此时使用 `SANDFLOS_TOKEN`，或显式设置 `SANDFLOS_CREDENTIAL_STORE=file` 以启用 0600 权限的本地凭据文件。CLI 不自动导入或删除桌面配置。
 
 `auth import` 会先调用用户接口验证 token，只有验证通过才保存。凭据被拒时退出 3 且不写文件；网络失败退出 4，原凭据保持不变。`auth status` 默认只检查本地凭据，加 `--verify` 才会访问网络。

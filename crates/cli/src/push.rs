@@ -123,6 +123,17 @@ fn emit_progress(event: &PushProgress) {
             path,
             stage,
         } => eprintln!("[{}/{}] {path}: {stage:?}", index + 1, total),
+        PushProgress::Read {
+            index,
+            total,
+            path,
+            bytes,
+            total_bytes,
+        } => eprintln!(
+            "[{}/{}] {path}: read {bytes}/{total_bytes} bytes",
+            index + 1,
+            total
+        ),
         PushProgress::Uploaded {
             index,
             total,

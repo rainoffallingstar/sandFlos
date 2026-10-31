@@ -201,7 +201,7 @@ fn with_optional_token(request: RequestBuilder, token: Option<&str>) -> RequestB
     }
 }
 
-fn parse_envelope_with_status<T: DeserializeOwned>(
+pub(crate) fn parse_envelope_with_status<T: DeserializeOwned>(
     text: &str,
     status: Option<u16>,
 ) -> ApiResult<T> {
@@ -227,6 +227,10 @@ fn parse_envelope_with_status<T: DeserializeOwned>(
         .cloned()
         .ok_or_else(|| ApiError::protocol("成功响应缺少 data"))?;
     serde_json::from_value(data).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
+}
+
+pub(crate) fn parse_json_document(text: &str) -> ApiResult<Value> {
+    serde_json::from_str(text).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
 }
 
 pub fn api_get_value(client: &Client, url: &str, token: Option<&str>) -> ApiResult<Value> {
@@ -448,13 +452,28 @@ pub fn fetch_auth_context_for_token_with_endpoints(
     let (mut auth, user) = fetch_identity_for_token_with_endpoints(endpoints, client, value)?;
     // Uploads must not proceed when the quota request failed.
     let storage = fetch_storage_with_endpoints(endpoints, client, &auth.bearer)?;
-    auth.storage_limit = parse_u64_field(&storage, "totalSize")
-        .or_else(|| parse_u64_field(&storage, "storageLimit"))
-        .or(auth.storage_limit);
-    auth.storage_used = parse_u64_field(&storage, "usedSize")
-        .or_else(|| parse_u64_field(&storage, "used"))
-        .or(auth.storage_used);
+    apply_storage_quota(&mut auth, &storage);
     Ok((auth, user))
+}
+
+pub(crate) fn parse_auth_identity(user: &Value, bearer: String) -> ApiResult<UploadAuthContext> {
+    let uid =
+        json_field_to_string(user, "uid").ok_or_else(|| ApiError::protocol("登录信息缺少 uid"))?;
+    Ok(UploadAuthContext {
+        bearer,
+        uid,
+        storage_limit: parse_u64_field(user, "storage_limit"),
+        storage_used: parse_u64_field(user, "storage_used"),
+    })
+}
+
+pub(crate) fn apply_storage_quota(auth: &mut UploadAuthContext, storage: &Value) {
+    auth.storage_limit = parse_u64_field(storage, "totalSize")
+        .or_else(|| parse_u64_field(storage, "storageLimit"))
+        .or(auth.storage_limit);
+    auth.storage_used = parse_u64_field(storage, "usedSize")
+        .or_else(|| parse_u64_field(storage, "used"))
+        .or(auth.storage_used);
 }
 
 /// Resolve identity without making unrelated statistics requests.
@@ -466,14 +485,7 @@ pub fn fetch_identity_for_token_with_endpoints(
     let value = normalize_optional(Some(value.to_string()))
         .ok_or_else(|| ApiError::authentication("认证凭据不能为空"))?;
     let user = fetch_user_me_at(client, endpoints.api_base(), &value)?;
-    let uid =
-        json_field_to_string(&user, "uid").ok_or_else(|| ApiError::protocol("登录信息缺少 uid"))?;
-    let auth = UploadAuthContext {
-        bearer: value,
-        uid,
-        storage_limit: parse_u64_field(&user, "storage_limit"),
-        storage_used: parse_u64_field(&user, "storage_used"),
-    };
+    let auth = parse_auth_identity(&user, value)?;
     Ok((auth, user))
 }
 
@@ -482,7 +494,11 @@ pub fn fetch_user_me(client: &Client, token: &str) -> ApiResult<Value> {
 }
 
 pub fn fetch_user_me_at(client: &Client, base_url: &str, token: &str) -> ApiResult<Value> {
-    api_get_value(client, &format!("{base_url}/api/1/users/me"), Some(token))
+    api_get_value(client, &user_me_url(base_url), Some(token))
+}
+
+pub(crate) fn user_me_url(base_url: &str) -> String {
+    format!("{base_url}/api/1/users/me")
 }
 
 pub fn fetch_storage(client: &Client, token: &str) -> ApiResult<Value> {
@@ -494,12 +510,11 @@ pub fn fetch_storage_with_endpoints(
     client: &Client,
     token: &str,
 ) -> ApiResult<Value> {
-    let base_url = endpoints.api_base();
-    api_get_value(
-        client,
-        &format!("{base_url}/api/1/statistics/v2/user/storage"),
-        Some(token),
-    )
+    api_get_value(client, &storage_url(endpoints.api_base()), Some(token))
+}
+
+pub(crate) fn storage_url(base_url: &str) -> String {
+    format!("{base_url}/api/1/statistics/v2/user/storage")
 }
 
 pub fn fetch_devices(client: &Client, token: &str) -> ApiResult<Value> {
@@ -511,12 +526,11 @@ pub fn fetch_devices_with_endpoints(
     client: &Client,
     token: &str,
 ) -> ApiResult<Value> {
-    let base_url = endpoints.api_base();
-    api_get_value(
-        client,
-        &format!("{base_url}/api/1/users/getDevice"),
-        Some(token),
-    )
+    api_get_value(client, &devices_url(endpoints.api_base()), Some(token))
+}
+
+pub(crate) fn devices_url(base_url: &str) -> String {
+    format!("{base_url}/api/1/users/getDevice")
 }
 
 pub fn fetch_reading_info(client: &Client, token: &str) -> ApiResult<Value> {
@@ -528,12 +542,11 @@ pub fn fetch_reading_info_with_endpoints(
     client: &Client,
     token: &str,
 ) -> ApiResult<Value> {
-    let base_url = endpoints.api_base();
-    api_get_value(
-        client,
-        &format!("{base_url}/api/1/statistics/readingInfo"),
-        Some(token),
-    )
+    api_get_value(client, &reading_info_url(endpoints.api_base()), Some(token))
+}
+
+pub(crate) fn reading_info_url(base_url: &str) -> String {
+    format!("{base_url}/api/1/statistics/readingInfo")
 }
 
 pub fn fetch_read_time_info(
@@ -558,12 +571,11 @@ pub fn fetch_read_time_info_with_endpoints(
     date: &str,
     range: &str,
 ) -> ApiResult<Value> {
-    let base_url = endpoints.api_base();
     let response = with_optional_token(
-        client.get(format!("{base_url}/api/1/statistics/readTimeInfo")),
+        client.get(read_time_info_url(endpoints.api_base())),
         Some(token),
     )
-    .query(&[("date", date), ("range", range)])
+    .query(&read_time_info_params(date, range))
     .send()?;
     let status = response.status();
     if !status.is_success() {
@@ -571,6 +583,14 @@ pub fn fetch_read_time_info_with_endpoints(
     }
     let text = response.text()?;
     parse_envelope_with_status(&text, Some(status.as_u16()))
+}
+
+pub(crate) fn read_time_info_url(base_url: &str) -> String {
+    format!("{base_url}/api/1/statistics/readTimeInfo")
+}
+
+pub(crate) fn read_time_info_params<'a>(date: &'a str, range: &'a str) -> [(&'a str, &'a str); 2] {
+    [("date", date), ("range", range)]
 }
 
 pub fn fetch_day_read(
@@ -595,19 +615,26 @@ pub fn fetch_day_read_with_endpoints(
     start_time: &str,
     end_time: &str,
 ) -> ApiResult<Value> {
-    let base_url = endpoints.api_base();
-    let response = with_optional_token(
-        client.get(format!("{base_url}/api/1/statistics/dayRead")),
-        Some(token),
-    )
-    .query(&[("startTime", start_time), ("endTime", end_time)])
-    .send()?;
+    let response = with_optional_token(client.get(day_read_url(endpoints.api_base())), Some(token))
+        .query(&day_read_params(start_time, end_time))
+        .send()?;
     let status = response.status();
     if !status.is_success() {
         return Err(ApiError::http(status.as_u16()));
     }
     let text = response.text()?;
     parse_envelope_with_status(&text, Some(status.as_u16()))
+}
+
+pub(crate) fn day_read_url(base_url: &str) -> String {
+    format!("{base_url}/api/1/statistics/dayRead")
+}
+
+pub(crate) fn day_read_params<'a>(
+    start_time: &'a str,
+    end_time: &'a str,
+) -> [(&'a str, &'a str); 2] {
+    [("startTime", start_time), ("endTime", end_time)]
 }
 
 pub fn fetch_buckets(
@@ -620,9 +647,28 @@ pub fn fetch_buckets_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
 ) -> ApiResult<std::collections::HashMap<String, BucketConfig>> {
-    let base_url = endpoints.api_base();
-    let data = api_get_value(client, &format!("{base_url}/api/1/config/buckets"), None)?;
+    let data = api_get_value(client, &buckets_url(endpoints.api_base()), None)?;
+    parse_buckets(data)
+}
+
+pub(crate) fn buckets_url(base_url: &str) -> String {
+    format!("{base_url}/api/1/config/buckets")
+}
+
+pub(crate) fn parse_buckets(
+    data: Value,
+) -> ApiResult<std::collections::HashMap<String, BucketConfig>> {
     serde_json::from_value(data).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
+}
+
+pub(crate) fn select_default_bucket(
+    buckets: std::collections::HashMap<String, BucketConfig>,
+) -> ApiResult<(String, BucketConfig)> {
+    buckets
+        .get_key_value(DEFAULT_BUCKET_KEY)
+        .or_else(|| buckets.iter().next())
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .ok_or_else(|| ApiError::protocol("未获取到可用 bucket 配置"))
 }
 
 pub fn fetch_default_bucket(client: &Client) -> ApiResult<(String, BucketConfig)> {
@@ -633,12 +679,7 @@ pub fn fetch_default_bucket_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
 ) -> ApiResult<(String, BucketConfig)> {
-    let buckets = fetch_buckets_with_endpoints(endpoints, client)?;
-    buckets
-        .get_key_value(DEFAULT_BUCKET_KEY)
-        .or_else(|| buckets.iter().next())
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .ok_or_else(|| ApiError::protocol("未获取到可用 bucket 配置"))
+    select_default_bucket(fetch_buckets_with_endpoints(endpoints, client)?)
 }
 
 pub fn fetch_sts_for_auth(client: &Client, auth: &UploadAuthContext) -> ApiResult<OssSts> {
@@ -650,12 +691,19 @@ pub fn fetch_sts_for_auth_with_endpoints(
     client: &Client,
     auth: &UploadAuthContext,
 ) -> ApiResult<OssSts> {
-    let base_url = endpoints.api_base();
-    let data = api_get_value(
-        client,
-        &format!("{base_url}/api/1/config/stss"),
-        Some(&auth.bearer),
-    )?;
+    let data = api_get_value(client, &sts_url(endpoints.api_base()), Some(&auth.bearer))?;
+    parse_oss_sts(data)
+}
+
+pub(crate) fn sts_url(base_url: &str) -> String {
+    format!("{base_url}/api/1/config/stss")
+}
+
+pub(crate) fn parse_oss_sts(data: Value) -> ApiResult<OssSts> {
+    serde_json::from_value(data).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
+}
+
+pub(crate) fn parse_sync_token_payload(data: Value) -> ApiResult<SyncToken> {
     serde_json::from_value(data).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
 }
 
@@ -673,17 +721,13 @@ fn sync_cookie_header(sync: &SyncToken) -> ApiResult<String> {
     Ok(format!("{cookie_name}={session_id}"))
 }
 
-fn fetch_sync_token_materials_for_auth_with_endpoints(
+fn fetch_sync_token_with_endpoints(
     endpoints: &crate::api::ApiEndpoints,
     client: &Client,
     auth: &UploadAuthContext,
 ) -> ApiResult<(SyncToken, Vec<String>)> {
-    let base_url = endpoints.api_base();
-    let response = with_optional_token(
-        client.get(format!("{base_url}/api/1/users/syncToken")),
-        Some(&auth.bearer),
-    )
-    .send()?;
+    let response =
+        with_optional_token(client.get(sync_token_url(endpoints)), Some(&auth.bearer)).send()?;
     let headers = response.headers().clone();
     let status = response.status();
     if !status.is_success() {
@@ -691,14 +735,32 @@ fn fetch_sync_token_materials_for_auth_with_endpoints(
     }
     let text = response.text()?;
     let data = parse_envelope_with_status::<Value>(&text, Some(status.as_u16()))?;
-    let sync: SyncToken = serde_json::from_value(data)
-        .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
+    let sync = parse_sync_token_payload(data)?;
     let set_cookies = headers
         .get_all(SET_COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok().map(ToString::to_string))
         .collect::<Vec<_>>();
     Ok((sync, set_cookies))
+}
+
+pub(crate) fn neocloud_cookie_header(
+    endpoints: &crate::api::ApiEndpoints,
+    sync: &SyncToken,
+    set_cookies: &[String],
+    url: &str,
+) -> ApiResult<String> {
+    let cookie_url =
+        Url::parse(endpoints.api_base()).map_err(|_| ApiError::protocol("invalid API endpoint"))?;
+    let request_url = Url::parse(url).map_err(|_| ApiError::protocol("invalid request URL"))?;
+    let jar = Jar::default();
+    jar.add_cookie_str(&sync_cookie_header(sync)?, &cookie_url);
+    for set_cookie in set_cookies {
+        jar.add_cookie_str(set_cookie, &cookie_url);
+    }
+    jar.cookies(&request_url)
+        .and_then(|cookie| cookie.to_str().ok().map(ToString::to_string))
+        .ok_or_else(|| ApiError::protocol("syncToken 缺少可用 cookie"))
 }
 
 fn neocloud_request(
@@ -709,20 +771,128 @@ fn neocloud_request(
     method: reqwest::Method,
     url: &str,
 ) -> ApiResult<RequestBuilder> {
-    let cookie_url =
-        Url::parse(endpoints.api_base()).map_err(|_| ApiError::protocol("invalid API endpoint"))?;
     let request_url = Url::parse(url).map_err(|_| ApiError::protocol("invalid request URL"))?;
-    let jar = Jar::default();
-    jar.add_cookie_str(&sync_cookie_header(sync)?, &cookie_url);
-    for set_cookie in set_cookies {
-        jar.add_cookie_str(set_cookie, &cookie_url);
-    }
-    let cookie = jar
-        .cookies(&request_url)
-        .ok_or_else(|| ApiError::protocol("syncToken 缺少可用 cookie"))?;
+    let cookie = neocloud_cookie_header(endpoints, sync, set_cookies, url)?;
     // Reuse the caller's client so timeout and redirect policy also cover
     // neocloud requests. Cookie selection still honours domain/path/secure.
-    Ok(client.request(method, request_url).header(COOKIE, cookie))
+    Ok(client.request(method, request_url).header(
+        COOKIE,
+        reqwest::header::HeaderValue::from_str(&cookie)
+            .map_err(|_| ApiError::protocol("syncToken 缺少可用 cookie"))?,
+    ))
+}
+
+pub(crate) fn sync_token_url(endpoints: &crate::api::ApiEndpoints) -> String {
+    format!("{}/api/1/users/syncToken", endpoints.api_base())
+}
+
+pub(crate) fn push_doc_url(endpoints: &crate::api::ApiEndpoints, doc_id: &str) -> String {
+    format!(
+        "{}/neocloud/{}",
+        endpoints.api_base(),
+        urlencoding::encode(doc_id)
+    )
+}
+
+pub(crate) fn push_doc_delete_url(
+    endpoints: &crate::api::ApiEndpoints,
+    doc_id: &str,
+    rev: &str,
+) -> String {
+    format!(
+        "{}?rev={}",
+        push_doc_url(endpoints, doc_id),
+        urlencoding::encode(rev)
+    )
+}
+
+pub(crate) fn batch_delete_push_message_url(endpoints: &crate::api::ApiEndpoints) -> String {
+    format!("{}/api/1/push/message/batchDelete", endpoints.api_base())
+}
+
+pub(crate) fn save_and_push_url(endpoints: &crate::api::ApiEndpoints) -> String {
+    format!("{}/api/1/push/saveAndPush", endpoints.api_base())
+}
+
+pub(crate) fn save_and_push_body(
+    bucket_key: &str,
+    object_key: &str,
+    file_name: &str,
+    resource_type: &str,
+    cb_id: &str,
+    cb_rev: &str,
+) -> Value {
+    json!({
+        "data": {
+            "name": file_name,
+            "resourceDisplayName": file_name,
+            "resourceKey": object_key,
+            "bucket": bucket_key,
+            "resourceType": resource_type,
+            "title": file_name,
+            "parent": Value::Null
+        },
+        "cbMsg": {
+            "id": cb_id,
+            "rev": cb_rev
+        }
+    })
+}
+
+pub(crate) fn push_message_doc(
+    auth: &UploadAuthContext,
+    file_name: &str,
+    file_size: u64,
+    resource_type: &str,
+    object_key: &str,
+    signed_url: &str,
+) -> (String, Value) {
+    let message_id = Uuid::new_v4().to_string();
+    let now_ms = crate::util::unix_ms_now() as u64;
+
+    let mut storage_bucket = serde_json::Map::new();
+    storage_bucket.insert(
+        resource_type.to_string(),
+        json!({
+            "oss": {
+                "displayName": file_name,
+                "expires": 0,
+                "key": object_key,
+                "provider": "oss",
+                "size": file_size,
+                "url": signed_url
+            }
+        }),
+    );
+
+    let push_file_doc = json!({
+        "_id": message_id,
+        "createdAt": now_ms,
+        "distributeChannel": "onyx",
+        "formats": [resource_type],
+        "guid": message_id,
+        "name": file_name,
+        "ownerId": auth.uid,
+        "size": file_size,
+        "md5": "",
+        "storage": Value::Object(storage_bucket),
+        "title": file_name,
+        "updatedAt": now_ms
+    });
+    let message_doc = json!({
+        "contentType": "digital_content",
+        "content": push_file_doc.to_string(),
+        "msgType": 2,
+        "dbId": format!("{}-MESSAGE", auth.uid),
+        "user": auth.uid,
+        "name": file_name,
+        "size": file_size,
+        "uniqueId": message_id,
+        "createdAt": now_ms,
+        "updatedAt": now_ms,
+        "_id": message_id
+    });
+    (message_id, message_doc)
 }
 
 fn parse_push_content(doc: &Value) -> Value {
@@ -733,7 +903,7 @@ fn parse_push_content(doc: &Value) -> Value {
     }
 }
 
-fn parse_push_item_doc(doc: &Value) -> Option<DashboardPushItem> {
+pub(crate) fn parse_push_item_doc(doc: &Value) -> Option<DashboardPushItem> {
     let content = parse_push_content(doc);
     let formats = content
         .get("formats")
@@ -791,14 +961,8 @@ pub fn fetch_push_queue_for_dashboard_with_endpoints(
     client: &Client,
     auth: &UploadAuthContext,
 ) -> ApiResult<Vec<DashboardPushItem>> {
-    let base_url = endpoints.api_base();
-    let (sync, set_cookies) =
-        fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
-    let channel = format!("{}-MESSAGE", auth.uid);
-    let url = format!(
-        "{base_url}/neocloud/_changes?filter=sync_gateway/bychannel&channels={}&include_docs=true&descending=true&limit=200",
-        urlencoding::encode(&channel)
-    );
+    let (sync, set_cookies) = fetch_sync_token_with_endpoints(endpoints, client, auth)?;
+    let url = queue_changes_url(endpoints, &auth.uid);
 
     let response = neocloud_request(
         endpoints,
@@ -814,9 +978,21 @@ pub fn fetch_push_queue_for_dashboard_with_endpoints(
         return Err(ApiError::http(status.as_u16()));
     }
     let text = response.text()?;
+    parse_push_queue_response(&text)
+}
 
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
+pub(crate) fn queue_changes_url(endpoints: &crate::api::ApiEndpoints, uid: &str) -> String {
+    let channel = format!("{uid}-MESSAGE");
+    format!(
+        "{}/neocloud/_changes?filter=sync_gateway/bychannel&channels={}&include_docs=true&descending=true&limit=200",
+        endpoints.api_base(),
+        urlencoding::encode(&channel)
+    )
+}
+
+pub(crate) fn parse_push_queue_response(text: &str) -> ApiResult<Vec<DashboardPushItem>> {
+    let value: Value =
+        serde_json::from_str(text).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
     let rows = value
         .get("results")
         .and_then(Value::as_array)
@@ -858,10 +1034,8 @@ pub fn fetch_push_doc_value_with_endpoints(
     auth: &UploadAuthContext,
     doc_id: &str,
 ) -> ApiResult<Value> {
-    let base_url = endpoints.api_base();
-    let (sync, set_cookies) =
-        fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
-    let url = format!("{base_url}/neocloud/{}", urlencoding::encode(doc_id));
+    let (sync, set_cookies) = fetch_sync_token_with_endpoints(endpoints, client, auth)?;
+    let url = push_doc_url(endpoints, doc_id);
     let response = neocloud_request(
         endpoints,
         client,
@@ -879,8 +1053,7 @@ pub fn fetch_push_doc_value_with_endpoints(
         );
         return Err(ApiError::http(status.as_u16()));
     }
-    let text = response.text()?;
-    serde_json::from_str(&text).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
+    parse_json_document(&response.text()?)
 }
 
 pub fn fetch_push_doc(
@@ -925,15 +1098,9 @@ pub fn delete_push_doc_with_endpoints(
     auth: &UploadAuthContext,
     doc_id: &str,
 ) -> ApiResult<()> {
-    let base_url = endpoints.api_base();
     let detail = fetch_push_doc_with_endpoints(endpoints, client, auth, doc_id)?;
-    let (sync, set_cookies) =
-        fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
-    let url = format!(
-        "{base_url}/neocloud/{}?rev={}",
-        urlencoding::encode(doc_id),
-        urlencoding::encode(&detail.rev)
-    );
+    let (sync, set_cookies) = fetch_sync_token_with_endpoints(endpoints, client, auth)?;
+    let url = push_doc_delete_url(endpoints, doc_id, &detail.rev);
     let response = neocloud_request(
         endpoints,
         client,
@@ -969,14 +1136,17 @@ pub fn batch_delete_push_message_with_endpoints(
     auth: &UploadAuthContext,
     doc_id: &str,
 ) -> ApiResult<()> {
-    let base_url = endpoints.api_base();
     let _ = api_post_value(
         client,
-        &format!("{base_url}/api/1/push/message/batchDelete"),
+        &batch_delete_push_message_url(endpoints),
         Some(&auth.bearer),
-        &json!({ "ids": [doc_id] }),
+        &batch_delete_push_message_body(doc_id),
     )?;
     Ok(())
+}
+
+pub(crate) fn batch_delete_push_message_body(doc_id: &str) -> Value {
+    json!({ "ids": [doc_id] })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1015,22 +1185,14 @@ pub fn save_and_push_with_endpoints(
     cb_id: &str,
     cb_rev: &str,
 ) -> ApiResult<Value> {
-    let base_url = endpoints.api_base();
-    let body = json!({
-        "data": {
-            "name": file_name,
-            "resourceDisplayName": file_name,
-            "resourceKey": object_key,
-            "bucket": bucket_key,
-            "resourceType": resource_type,
-            "title": file_name,
-            "parent": Value::Null
-        },
-        "cbMsg": {
-            "id": cb_id,
-            "rev": cb_rev
-        }
-    });
+    let body = save_and_push_body(
+        bucket_key,
+        object_key,
+        file_name,
+        resource_type,
+        cb_id,
+        cb_rev,
+    );
 
     // Submit exactly once. A timeout or gateway error here is ambiguous: the
     // server may already have accepted the message, so retrying in-process can
@@ -1038,7 +1200,7 @@ pub fn save_and_push_with_endpoints(
     // `unknown` and the user resolves it by inspecting the queue first.
     api_post_value(
         client,
-        &format!("{base_url}/api/1/push/saveAndPush"),
+        &save_and_push_url(endpoints),
         Some(&auth.bearer),
         &body,
     )
@@ -1063,14 +1225,12 @@ pub fn put_existing_push_message_doc_with_endpoints(
     auth: &UploadAuthContext,
     doc: &Value,
 ) -> ApiResult<(String, String)> {
-    let base_url = endpoints.api_base();
     let doc_id =
         json_field_to_string(doc, "_id").ok_or_else(|| ApiError::protocol("推送消息缺少 _id"))?;
     let doc_rev =
         json_field_to_string(doc, "_rev").ok_or_else(|| ApiError::protocol("推送消息缺少 _rev"))?;
-    let (sync, set_cookies) =
-        fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
-    let url = format!("{base_url}/neocloud/{}", urlencoding::encode(&doc_id));
+    let (sync, set_cookies) = fetch_sync_token_with_endpoints(endpoints, client, auth)?;
+    let url = push_doc_url(endpoints, &doc_id);
     let response = neocloud_request(
         endpoints,
         client,
@@ -1094,20 +1254,39 @@ pub fn put_existing_push_message_doc_with_endpoints(
         );
         return Err(ApiError::http(status.as_u16()));
     }
-    let text = response.text()?;
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))?;
+    let value = parse_json_document(&response.text()?)?;
     if json_field_to_string(&value, "error").is_some() {
         crate::diagnostics::warn(
             "api.put_existing_push_message_doc",
             format!("doc_id={doc_id} doc_rev={doc_rev} remote_error=true"),
         );
+    }
+    parse_existing_push_doc_write_response(&value, doc_id, doc_rev)
+}
+
+pub(crate) fn parse_existing_push_doc_write_response(
+    value: &Value,
+    fallback_id: String,
+    fallback_rev: String,
+) -> ApiResult<(String, String)> {
+    if json_field_to_string(value, "error").is_some() {
         return Err(ApiError::protocol("remote message update rejected"));
     }
-    let id = json_field_to_string(&value, "id").unwrap_or(doc_id);
-    let rev = json_field_to_string(&value, "rev")
-        .or_else(|| json_field_to_string(doc, "_rev"))
-        .unwrap_or(doc_rev);
+    let id = json_field_to_string(value, "id").unwrap_or(fallback_id);
+    let rev = json_field_to_string(value, "rev").unwrap_or(fallback_rev);
+    Ok((id, rev))
+}
+
+pub(crate) fn parse_push_message_write_response(
+    value: &Value,
+    fallback_id: String,
+) -> ApiResult<(String, String)> {
+    if json_field_to_string(value, "error").is_some() {
+        return Err(ApiError::protocol("remote message write rejected"));
+    }
+    let id = json_field_to_string(value, "id").unwrap_or(fallback_id);
+    let rev = json_field_to_string(value, "rev")
+        .ok_or_else(|| ApiError::protocol("neocloud 返回缺少 rev"))?;
     Ok((id, rev))
 }
 
@@ -1143,56 +1322,17 @@ pub fn put_push_message_doc_with_endpoints(
     object_key: &str,
     signed_url: &str,
 ) -> ApiResult<(String, String)> {
-    let base_url = endpoints.api_base();
-    let (sync, set_cookies) =
-        fetch_sync_token_materials_for_auth_with_endpoints(endpoints, client, auth)?;
-    let message_id = Uuid::new_v4().to_string();
-    let now_ms = crate::util::unix_ms_now() as u64;
-
-    let mut storage_bucket = serde_json::Map::new();
-    storage_bucket.insert(
-        resource_type.to_string(),
-        json!({
-            "oss": {
-                "displayName": file_name,
-                "expires": 0,
-                "key": object_key,
-                "provider": "oss",
-                "size": file_size,
-                "url": signed_url
-            }
-        }),
+    let (sync, set_cookies) = fetch_sync_token_with_endpoints(endpoints, client, auth)?;
+    let (message_id, message_doc) = push_message_doc(
+        auth,
+        file_name,
+        file_size,
+        resource_type,
+        object_key,
+        signed_url,
     );
 
-    let push_file_doc = json!({
-        "_id": message_id,
-        "createdAt": now_ms,
-        "distributeChannel": "onyx",
-        "formats": [resource_type],
-        "guid": message_id,
-        "name": file_name,
-        "ownerId": auth.uid,
-        "size": file_size,
-        "md5": "",
-        "storage": Value::Object(storage_bucket),
-        "title": file_name,
-        "updatedAt": now_ms
-    });
-    let message_doc = json!({
-        "contentType": "digital_content",
-        "content": push_file_doc.to_string(),
-        "msgType": 2,
-        "dbId": format!("{}-MESSAGE", auth.uid),
-        "user": auth.uid,
-        "name": file_name,
-        "size": file_size,
-        "uniqueId": message_id,
-        "createdAt": now_ms,
-        "updatedAt": now_ms,
-        "_id": message_id
-    });
-
-    let url = format!("{base_url}/neocloud/{}", urlencoding::encode(&message_id));
+    let url = push_doc_url(endpoints, &message_id);
     let response = neocloud_request(
         endpoints,
         client,
@@ -1224,12 +1364,8 @@ pub fn put_push_message_doc_with_endpoints(
             "api.put_push_message_doc",
             format!("message_id={message_id} remote_error=true"),
         );
-        return Err(ApiError::protocol("remote message write rejected"));
     }
-    let id = json_field_to_string(&value, "id").unwrap_or(message_id);
-    let rev = json_field_to_string(&value, "rev")
-        .ok_or_else(|| ApiError::protocol("neocloud 返回缺少 rev"))?;
-    Ok((id, rev))
+    parse_push_message_write_response(&value, message_id)
 }
 
 #[cfg(test)]

@@ -4,21 +4,10 @@
 //! HTTP implementation lives at the edge; tests can supply the same traits with
 //! deterministic fakes and observe only the public results.
 
-use crate::api::{
-    batch_delete_push_message_with_endpoints, create_client, delete_push_doc_with_endpoints,
-    fetch_auth_context_for_token_with_endpoints, fetch_day_read_with_endpoints,
-    fetch_default_bucket_with_endpoints, fetch_devices_with_endpoints,
-    fetch_identity_for_token_with_endpoints, fetch_push_queue_for_dashboard_with_endpoints,
-    fetch_read_time_info_with_endpoints, fetch_reading_info_with_endpoints,
-    fetch_storage_with_endpoints, fetch_sts_for_auth_with_endpoints,
-    put_push_message_doc_with_endpoints, save_and_push_with_endpoints, ApiError, ApiErrorKind,
-};
+use crate::api::{create_client, ApiError, ApiErrorKind};
 use crate::device::build_dashboard_devices;
 use crate::models::{BucketConfig, DashboardDevice, DashboardPushItem, OssSts, UploadAuthContext};
-use crate::push::{
-    build_oss_host, build_verified_signed_download_url_with_endpoints, content_type_for, sign_oss,
-    wait_for_remote_push_doc_ready_with_endpoints,
-};
+use crate::push::{build_oss_host, content_type_for, sign_oss};
 use bytes::Bytes;
 use http_body::{Body as HttpBody, Frame, SizeHint};
 use reqwest::blocking::Client;
@@ -250,6 +239,15 @@ pub enum PushProgress {
         path: String,
         stage: PushStage,
     },
+    /// Local bytes read from the file. This is progress through the request
+    /// body, not evidence that OSS acknowledged the upload.
+    Read {
+        index: usize,
+        total: usize,
+        path: String,
+        bytes: u64,
+        total_bytes: u64,
+    },
     Uploaded {
         index: usize,
         total: usize,
@@ -279,6 +277,27 @@ pub trait PushBackend {
         path: &Path,
         content_type: &str,
     ) -> ServiceResult<()>;
+    /// Upload the file and report monotonically increasing local read bytes.
+    ///
+    /// The default keeps existing implementers compatible by delegating to
+    /// `upload` without progress. Backends with a streamed request can override
+    /// this and sample their read counter while the request is running.
+    ///
+    /// If cancellation is observed, the backend invokes no further samples;
+    /// callers must not expect the final sample to equal the file length after
+    /// a cancelled upload.
+    fn upload_with_progress(
+        &mut self,
+        bucket: &BucketConfig,
+        sts: &OssSts,
+        object_key: &str,
+        path: &Path,
+        content_type: &str,
+        on_bytes_read: &mut dyn FnMut(u64),
+    ) -> ServiceResult<()> {
+        let _ = on_bytes_read;
+        self.upload(bucket, sts, object_key, path, content_type)
+    }
     fn signed_url(
         &mut self,
         auth: &UploadAuthContext,
@@ -669,10 +688,27 @@ impl<B: PushBackend> PushService<B> {
                 stage: PushStage::UploadOss,
             });
             let content_type = content_type_for(path);
-            if let Err(error) = self
-                .backend
-                .upload(&bucket, &sts, &object_key, path, &content_type)
-            {
+            let mut last_read = 0_u64;
+            if let Err(error) = self.backend.upload_with_progress(
+                &bucket,
+                &sts,
+                &object_key,
+                path,
+                &content_type,
+                &mut |bytes| {
+                    let bounded = bytes.min(size);
+                    if bounded > last_read {
+                        last_read = bounded;
+                        on_progress(PushProgress::Read {
+                            index,
+                            total,
+                            path: result.path.clone(),
+                            bytes: bounded,
+                            total_bytes: size,
+                        });
+                    }
+                },
+            ) {
                 fail_file(
                     &mut on_progress,
                     &mut result,
@@ -952,6 +988,16 @@ impl<B: QueueMutationBackend> QueueService<B> {
                     unknown: false,
                     error: None,
                 }),
+                Err(error) if error.kind == ServiceErrorKind::Cancelled => {
+                    Ok(QueueMutationResult {
+                        id_checked: true,
+                        remote_delete_attempted: true,
+                        message_delete_attempted: false,
+                        complete: false,
+                        unknown: false,
+                        error: Some(error),
+                    })
+                }
                 Err(error) => Ok(QueueMutationResult {
                     id_checked: true,
                     remote_delete_attempted: true,
@@ -984,6 +1030,14 @@ impl<B: QueueMutationBackend> QueueService<B> {
                     Err(error) => Err(error),
                 }
             }
+            Err(error) if error.kind == ServiceErrorKind::Unknown => Ok(QueueMutationResult {
+                id_checked: true,
+                remote_delete_attempted: true,
+                message_delete_attempted: false,
+                complete: false,
+                unknown: true,
+                error: Some(error),
+            }),
             Err(error) => Err(error),
         }
     }
@@ -1139,9 +1193,136 @@ impl HttpPushBackend {
     }
 
     fn auth(&self) -> ServiceResult<UploadAuthContext> {
-        fetch_auth_context_for_token_with_endpoints(&self.endpoints, &self.client, &self.credential)
-            .map(|(auth, _)| auth)
-            .map_err(|error| classify("auth", error))
+        crate::cancellable_prepare::auth_context(
+            self.timeout,
+            &self.endpoints,
+            &self.credential,
+            self.cancel_flag,
+        )
+        .map_err(|error| classify_request("auth", self.cancel_flag, error))
+    }
+
+    fn upload_bytes(
+        &mut self,
+        bucket: &BucketConfig,
+        sts: &OssSts,
+        object_key: &str,
+        path: &Path,
+        content_type: &str,
+        on_bytes_read: &mut dyn FnMut(u64),
+    ) -> ServiceResult<()> {
+        self.check_cancelled()?;
+        let expiration = chrono::DateTime::parse_from_rfc3339(&sts.expiration).map_err(|_| {
+            ServiceError::new(
+                ServiceErrorKind::Protocol,
+                "invalid_sts_expiration",
+                "upload",
+                "storage credentials have an invalid expiration",
+            )
+        })?;
+        if expiration.timestamp_millis() <= chrono::Utc::now().timestamp_millis() {
+            return Err(ServiceError::new(
+                ServiceErrorKind::Protocol,
+                "sts_expired",
+                "upload",
+                "temporary storage credentials have expired; retry to request fresh credentials",
+            ));
+        }
+        let (bucket_name, host) =
+            build_oss_host(bucket).map_err(|error| ServiceError::protocol("upload", error))?;
+        let canonical_resource = format!("/{bucket_name}/{object_key}");
+        let date = httpdate::fmt_http_date(SystemTime::now());
+        let string_to_sign = format!(
+            "PUT\n\n{content_type}\n{date}\nx-oss-security-token:{}\n{canonical_resource}",
+            sts.security_token
+        );
+        let signature = sign_oss(&sts.access_key_secret, &string_to_sign)
+            .map_err(|error| ServiceError::protocol("upload", error))?;
+        let authorization = format!("OSS {}:{}", sts.access_key_id, signature);
+        let file_size = fs::metadata(path)
+            .map_err(|error| {
+                ServiceError::local_io("file_unreadable", "upload", error.to_string())
+            })?
+            .len();
+        let file = fs::File::open(path).map_err(|error| {
+            ServiceError::local_io("file_unreadable", "upload", error.to_string())
+        })?;
+        let url = self
+            .endpoints
+            .oss_url(&format!("https://{host}/{object_key}"));
+        let cancel_flag = self.cancel_flag;
+        let bytes_read = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed_bytes = std::sync::Arc::clone(&bytes_read);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| ServiceError::network("upload", "无法启动上传运行时"))?;
+        let timeout = self.timeout;
+        let mut reported = 0_u64;
+        let result = runtime.block_on(async {
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(timeout)
+                .build()
+                .map_err(|_| ServiceError::network("upload", "无法创建上传客户端"))?;
+            let body = reqwest::Body::wrap(CancellableUploadBody {
+                file,
+                remaining: file_size,
+                flag: cancel_flag,
+                bytes_read: observed_bytes,
+            });
+            let pending = client
+                .put(&url)
+                .header("Date", date)
+                .header(CONTENT_TYPE, content_type)
+                .header(CONTENT_LENGTH, file_size.to_string())
+                .header("x-oss-security-token", sts.security_token.clone())
+                .header(AUTHORIZATION, authorization)
+                .body(body)
+                .send();
+            tokio::pin!(pending);
+            let result = loop {
+                match tokio::time::timeout(Duration::from_millis(25), &mut pending).await {
+                    Ok(result) => break Some(result.map(|response| response.status().as_u16())),
+                    Err(_) if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) => {
+                        break None;
+                    }
+                    Err(_) => {
+                        let read = bytes_read.load(Ordering::Relaxed);
+                        if read > reported {
+                            reported = read;
+                            on_bytes_read(read);
+                        }
+                    }
+                }
+            };
+            // Leaving this scope drops the response, request future, and client
+            // while the runtime is still alive. Dropping the future closes the
+            // in-flight connection; no background uploader remains.
+            Ok::<_, ServiceError>(result)
+        })?;
+        drop(runtime);
+        let cancelled = self.cancellation_requested();
+        let read = bytes_read.load(Ordering::Relaxed);
+        if read > reported && !cancelled {
+            on_bytes_read(read);
+        }
+        let status = match result {
+            None => return Err(ServiceError::cancelled("upload")),
+            Some(Err(_)) if self.cancellation_requested() => {
+                return Err(ServiceError::cancelled("upload"));
+            }
+            Some(Err(error)) => return Err(classify("upload", error.into())),
+            Some(Ok(status)) => status,
+        };
+        if self.cancellation_requested() {
+            return Err(ServiceError::cancelled("upload"));
+        }
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(classify("upload", ApiError::http(status)))
+        }
     }
 }
 
@@ -1154,6 +1335,7 @@ struct CancellableUploadBody {
     file: fs::File,
     remaining: u64,
     flag: Option<&'static AtomicBool>,
+    bytes_read: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl HttpBody for CancellableUploadBody {
@@ -1180,6 +1362,8 @@ impl HttpBody for CancellableUploadBody {
             )))),
             Ok(read) => {
                 this.remaining -= read as u64;
+                this.bytes_read
+                    .fetch_add(read as u64, std::sync::atomic::Ordering::Relaxed);
                 chunk.truncate(read);
                 std::task::Poll::Ready(Some(Ok(Frame::data(Bytes::from(chunk)))))
             }
@@ -1193,6 +1377,22 @@ impl HttpBody for CancellableUploadBody {
 
     fn size_hint(&self) -> SizeHint {
         SizeHint::with_exact(self.remaining)
+    }
+}
+
+fn classify_request(
+    stage: &'static str,
+    flag: Option<&'static AtomicBool>,
+    error: crate::cancellable_push::RequestError,
+) -> ServiceError {
+    match error {
+        crate::cancellable_push::RequestError::Cancelled => ServiceError::cancelled(stage),
+        crate::cancellable_push::RequestError::Api(_)
+            if flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) =>
+        {
+            ServiceError::cancelled(stage)
+        }
+        crate::cancellable_push::RequestError::Api(error) => classify(stage, error),
     }
 }
 
@@ -1250,13 +1450,13 @@ impl PushBackend for HttpPushBackend {
     }
     fn default_bucket(&mut self) -> ServiceResult<(String, BucketConfig)> {
         self.check_cancelled()?;
-        fetch_default_bucket_with_endpoints(&self.endpoints, &self.client)
-            .map_err(|error| classify("bucket", error))
+        crate::cancellable_prepare::default_bucket(self.timeout, &self.endpoints, self.cancel_flag)
+            .map_err(|error| classify_request("bucket", self.cancel_flag, error))
     }
     fn sts(&mut self, auth: &UploadAuthContext) -> ServiceResult<OssSts> {
         self.check_cancelled()?;
-        fetch_sts_for_auth_with_endpoints(&self.endpoints, &self.client, auth)
-            .map_err(|error| classify("sts", error))
+        crate::cancellable_prepare::sts(self.timeout, &self.endpoints, auth, self.cancel_flag)
+            .map_err(|error| classify_request("sts", self.cancel_flag, error))
     }
     fn upload(
         &mut self,
@@ -1266,103 +1466,18 @@ impl PushBackend for HttpPushBackend {
         path: &Path,
         content_type: &str,
     ) -> ServiceResult<()> {
-        self.check_cancelled()?;
-        let expiration = chrono::DateTime::parse_from_rfc3339(&sts.expiration).map_err(|_| {
-            ServiceError::new(
-                ServiceErrorKind::Protocol,
-                "invalid_sts_expiration",
-                "upload",
-                "storage credentials have an invalid expiration",
-            )
-        })?;
-        if expiration.timestamp_millis() <= chrono::Utc::now().timestamp_millis() {
-            return Err(ServiceError::new(
-                ServiceErrorKind::Protocol,
-                "sts_expired",
-                "upload",
-                "temporary storage credentials have expired; retry to request fresh credentials",
-            ));
-        }
-        let (bucket_name, host) =
-            build_oss_host(bucket).map_err(|error| ServiceError::protocol("upload", error))?;
-        let canonical_resource = format!("/{bucket_name}/{object_key}");
-        let date = httpdate::fmt_http_date(SystemTime::now());
-        let string_to_sign = format!(
-            "PUT\n\n{content_type}\n{date}\nx-oss-security-token:{}\n{canonical_resource}",
-            sts.security_token
-        );
-        let signature = sign_oss(&sts.access_key_secret, &string_to_sign)
-            .map_err(|error| ServiceError::protocol("upload", error))?;
-        let authorization = format!("OSS {}:{}", sts.access_key_id, signature);
-        let file_size = fs::metadata(path)
-            .map_err(|error| {
-                ServiceError::local_io("file_unreadable", "upload", error.to_string())
-            })?
-            .len();
-        let file = fs::File::open(path).map_err(|error| {
-            ServiceError::local_io("file_unreadable", "upload", error.to_string())
-        })?;
-        let url = self
-            .endpoints
-            .oss_url(&format!("https://{host}/{object_key}"));
-        let cancel_flag = self.cancel_flag;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|_| ServiceError::network("upload", "无法启动上传运行时"))?;
-        let timeout = self.timeout;
-        let result = runtime.block_on(async {
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(timeout)
-                .build()
-                .map_err(|_| ServiceError::network("upload", "无法创建上传客户端"))?;
-            let body = reqwest::Body::wrap(CancellableUploadBody {
-                file,
-                remaining: file_size,
-                flag: cancel_flag,
-            });
-            let pending = client
-                .put(&url)
-                .header("Date", date)
-                .header(CONTENT_TYPE, content_type)
-                .header(CONTENT_LENGTH, file_size.to_string())
-                .header("x-oss-security-token", sts.security_token.clone())
-                .header(AUTHORIZATION, authorization)
-                .body(body)
-                .send();
-            tokio::pin!(pending);
-            let result = loop {
-                match tokio::time::timeout(Duration::from_millis(25), &mut pending).await {
-                    Ok(result) => break Some(result.map(|response| response.status().as_u16())),
-                    Err(_) if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) => {
-                        break None;
-                    }
-                    Err(_) => {}
-                }
-            };
-            // Leaving this scope drops the response, request future, and client
-            // while the runtime is still alive. Dropping the future closes the
-            // in-flight connection; no background uploader remains.
-            Ok::<_, ServiceError>(result)
-        })?;
-        drop(runtime);
-        let status = match result {
-            None => return Err(ServiceError::cancelled("upload")),
-            Some(Err(_)) if self.cancellation_requested() => {
-                return Err(ServiceError::cancelled("upload"));
-            }
-            Some(Err(error)) => return Err(classify("upload", error.into())),
-            Some(Ok(status)) => status,
-        };
-        if self.cancellation_requested() {
-            return Err(ServiceError::cancelled("upload"));
-        }
-        if (200..300).contains(&status) {
-            Ok(())
-        } else {
-            Err(classify("upload", ApiError::http(status)))
-        }
+        self.upload_bytes(bucket, sts, object_key, path, content_type, &mut |_| {})
+    }
+    fn upload_with_progress(
+        &mut self,
+        bucket: &BucketConfig,
+        sts: &OssSts,
+        object_key: &str,
+        path: &Path,
+        content_type: &str,
+        on_bytes_read: &mut dyn FnMut(u64),
+    ) -> ServiceResult<()> {
+        self.upload_bytes(bucket, sts, object_key, path, content_type, on_bytes_read)
     }
     fn signed_url(
         &mut self,
@@ -1371,14 +1486,15 @@ impl PushBackend for HttpPushBackend {
         object_key: &str,
     ) -> ServiceResult<String> {
         self.check_cancelled()?;
-        build_verified_signed_download_url_with_endpoints(
+        crate::cancellable_prepare::signed_url(
+            self.timeout,
             &self.endpoints,
-            &self.client,
             auth,
             bucket,
             object_key,
+            self.cancel_flag,
         )
-        .map_err(|error| classify("signed_url", error))
+        .map_err(|error| classify_request("signed_url", self.cancel_flag, error))
     }
     fn write_message(
         &mut self,
@@ -1391,17 +1507,26 @@ impl PushBackend for HttpPushBackend {
         signed_url: &str,
     ) -> ServiceResult<(String, String)> {
         self.check_cancelled()?;
-        put_push_message_doc_with_endpoints(
+        crate::cancellable_push::write_message(
+            self.timeout,
             &self.endpoints,
-            &self.client,
             auth,
+            self.cancel_flag,
             file_name,
             size,
             resource_type,
             object_key,
             signed_url,
         )
-        .map_err(|error| classify("write_message", error))
+        .map_err(|error| match error {
+            crate::cancellable_push::RequestError::Cancelled => {
+                ServiceError::cancelled("write_message")
+            }
+            crate::cancellable_push::RequestError::Api(_error) if self.cancellation_requested() => {
+                ServiceError::cancelled("write_message")
+            }
+            crate::cancellable_push::RequestError::Api(error) => classify("write_message", error),
+        })
         // A successful response carries the document identity even if
         // cancellation arrived while it was in flight. The service records
         // that identity and stops before the next network phase.
@@ -1413,18 +1538,23 @@ impl PushBackend for HttpPushBackend {
         rev: &str,
     ) -> ServiceResult<()> {
         self.check_cancelled()?;
-        let confirmed = wait_for_remote_push_doc_ready_with_endpoints(
+        crate::cancellable_push::confirm_sync(
+            self.timeout,
             &self.endpoints,
-            &self.client,
             auth,
+            self.cancel_flag,
             doc_id,
             rev,
         )
-        .map_err(|error| classify("confirm_sync", error));
-        if confirmed.is_err() && self.cancellation_requested() {
-            return Err(ServiceError::cancelled("confirm_sync"));
-        }
-        confirmed
+        .map_err(|error| match error {
+            crate::cancellable_push::RequestError::Cancelled => {
+                ServiceError::cancelled("confirm_sync")
+            }
+            crate::cancellable_push::RequestError::Api(_error) if self.cancellation_requested() => {
+                ServiceError::cancelled("confirm_sync")
+            }
+            crate::cancellable_push::RequestError::Api(error) => classify("confirm_sync", error),
+        })
     }
     fn save_and_push(
         &mut self,
@@ -1437,10 +1567,11 @@ impl PushBackend for HttpPushBackend {
         rev: &str,
     ) -> ServiceResult<()> {
         self.check_cancelled()?;
-        let submitted = save_and_push_with_endpoints(
+        crate::cancellable_push::save_and_push(
+            self.timeout,
             &self.endpoints,
-            &self.client,
             auth,
+            self.cancel_flag,
             bucket_key,
             object_key,
             file_name,
@@ -1448,21 +1579,23 @@ impl PushBackend for HttpPushBackend {
             doc_id,
             rev,
         )
-        .map(|_| ())
-        .map_err(|error| classify("save_and_push", error));
-        if submitted.is_err() && self.cancellation_requested() {
-            // Preserve a received success. Only an unconfirmed submission
-            // remains unknown when cancellation arrives while it is in flight.
-            return Err(ServiceError::cancelled("save_and_push"));
-        }
-        submitted
+        .map_err(|error| match error {
+            crate::cancellable_push::RequestError::Cancelled => {
+                ServiceError::cancelled("save_and_push")
+            }
+            crate::cancellable_push::RequestError::Api(_error) if self.cancellation_requested() => {
+                ServiceError::cancelled("save_and_push")
+            }
+            crate::cancellable_push::RequestError::Api(error) => classify("save_and_push", error),
+        })
     }
 }
 
 pub struct HttpQueueReadBackend {
     endpoints: crate::api::ApiEndpoints,
-    client: Client,
+    timeout: Duration,
     credential: String,
+    cancel_flag: Option<&'static AtomicBool>,
 }
 impl HttpQueueReadBackend {
     pub fn with_test_endpoints(
@@ -1486,27 +1619,54 @@ impl HttpQueueReadBackend {
     pub fn new(timeout: Duration, credential: impl Into<String>) -> ServiceResult<Self> {
         Ok(Self {
             endpoints: crate::api::ApiEndpoints::production(),
-            client: create_client(timeout.as_secs().max(1))
-                .map_err(|_| ServiceError::network("client", "无法创建 HTTP 客户端"))?,
+            timeout,
             credential: credential.into(),
+            cancel_flag: None,
         })
+    }
+
+    pub fn with_cancel_flag(mut self, flag: &'static AtomicBool) -> Self {
+        self.cancel_flag = Some(flag);
+        self
+    }
+
+    fn check_cancelled(&self) -> ServiceResult<()> {
+        if self
+            .cancel_flag
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            Err(ServiceError::cancelled("queue"))
+        } else {
+            Ok(())
+        }
     }
 }
 impl QueueReadBackend for HttpQueueReadBackend {
     fn auth_context(&mut self) -> ServiceResult<UploadAuthContext> {
-        fetch_identity_for_token_with_endpoints(&self.endpoints, &self.client, &self.credential)
-            .map(|(auth, _)| auth)
-            .map_err(|e| classify("auth", e))
+        self.check_cancelled()?;
+        crate::cancellable_query::identity(
+            self.timeout,
+            &self.endpoints,
+            &self.credential,
+            self.cancel_flag,
+        )
+        .map_err(|error| classify_request("auth", self.cancel_flag, error))
     }
     fn queue_window(&mut self, auth: &UploadAuthContext) -> ServiceResult<Vec<DashboardPushItem>> {
-        fetch_push_queue_for_dashboard_with_endpoints(&self.endpoints, &self.client, auth)
-            .map_err(|e| classify("queue.list", e))
+        self.check_cancelled()?;
+        crate::cancellable_queue::queue_window(
+            self.timeout,
+            &self.endpoints,
+            auth,
+            self.cancel_flag,
+        )
+        .map_err(|error| classify_request("queue.list", self.cancel_flag, error))
     }
 }
 
 pub struct HttpQueueMutationBackend {
     endpoints: crate::api::ApiEndpoints,
-    client: Client,
+    timeout: Duration,
     credential: String,
     cancel_flag: Option<&'static std::sync::atomic::AtomicBool>,
 }
@@ -1552,8 +1712,7 @@ impl HttpQueueMutationBackend {
     pub fn new(timeout: Duration, credential: impl Into<String>) -> ServiceResult<Self> {
         Ok(Self {
             endpoints: crate::api::ApiEndpoints::production(),
-            client: create_client(timeout.as_secs().max(1))
-                .map_err(|_| ServiceError::network("client", "无法创建 HTTP 客户端"))?,
+            timeout,
             credential: credential.into(),
             cancel_flag: None,
         })
@@ -1562,15 +1721,22 @@ impl HttpQueueMutationBackend {
 impl QueueMutationBackend for HttpQueueMutationBackend {
     fn auth_context(&mut self) -> ServiceResult<UploadAuthContext> {
         self.check_cancelled()?;
-        fetch_identity_for_token_with_endpoints(&self.endpoints, &self.client, &self.credential)
-            .map(|(auth, _)| auth)
-            .map_err(|e| classify("auth", e))
+        crate::cancellable_query::identity(
+            self.timeout,
+            &self.endpoints,
+            &self.credential,
+            self.cancel_flag,
+        )
+        .map_err(|error| classify_request("auth", self.cancel_flag, error))
     }
     fn resend(&mut self, auth: &UploadAuthContext, id: &str) -> ServiceResult<()> {
         self.check_cancelled()?;
-        crate::push::push_resend_with_auth_with_endpoints(&self.endpoints, &self.client, auth, id)
+        crate::cancellable_queue::resend(self.timeout, &self.endpoints, auth, self.cancel_flag, id)
             .map_err(|error| {
                 let (submitted, error) = match error {
+                    crate::push::ResendError::Cancelled => {
+                        return ServiceError::cancelled("queue.resend")
+                    }
                     crate::push::ResendError::BeforeSubmission(error) => (false, error),
                     crate::push::ResendError::AfterSubmission(error) => (true, error),
                 };
@@ -1590,20 +1756,55 @@ impl QueueMutationBackend for HttpQueueMutationBackend {
     }
     fn delete_push_doc(&mut self, auth: &UploadAuthContext, id: &str) -> ServiceResult<()> {
         self.check_cancelled()?;
-        delete_push_doc_with_endpoints(&self.endpoints, &self.client, auth, id)
-            .map_err(|e| classify("queue.delete", e))
+        crate::cancellable_queue::delete_push_doc(
+            self.timeout,
+            &self.endpoints,
+            auth,
+            self.cancel_flag,
+            id,
+        )
+        .map_err(|error| map_queue_mutation_error("queue.delete", self.cancel_flag, error))
     }
     fn delete_message_record(&mut self, auth: &UploadAuthContext, id: &str) -> ServiceResult<()> {
         self.check_cancelled()?;
-        batch_delete_push_message_with_endpoints(&self.endpoints, &self.client, auth, id)
-            .map_err(|e| classify("queue.delete", e))
+        crate::cancellable_queue::delete_message_record(
+            self.timeout,
+            &self.endpoints,
+            auth,
+            self.cancel_flag,
+            id,
+        )
+        .map_err(|error| map_queue_mutation_error("queue.delete", self.cancel_flag, error))
+    }
+}
+
+fn map_queue_mutation_error(
+    stage: &'static str,
+    flag: Option<&'static AtomicBool>,
+    error: crate::cancellable_queue::MutationError,
+) -> ServiceError {
+    match error {
+        crate::cancellable_queue::MutationError::Cancelled => ServiceError::cancelled(stage),
+        crate::cancellable_queue::MutationError::Api(error) => classify_request(
+            stage,
+            flag,
+            crate::cancellable_push::RequestError::Api(error),
+        ),
+        crate::cancellable_queue::MutationError::Unknown(error) => {
+            let mut classified = classify(stage, error);
+            classified.kind = ServiceErrorKind::Unknown;
+            classified.code = "queue_mutation_unknown";
+            classified.message = "队列修改请求可能已提交但未收到确认，请先查询队列".into();
+            classified
+        }
     }
 }
 
 pub struct HttpQueryBackend {
     endpoints: crate::api::ApiEndpoints,
-    client: Client,
+    timeout: Duration,
     credential: String,
+    cancel_flag: Option<&'static AtomicBool>,
 }
 impl HttpQueryBackend {
     pub fn with_test_endpoints(
@@ -1627,26 +1828,59 @@ impl HttpQueryBackend {
     pub fn new(timeout: Duration, credential: impl Into<String>) -> ServiceResult<Self> {
         Ok(Self {
             endpoints: crate::api::ApiEndpoints::production(),
-            client: create_client(timeout.as_secs().max(1))
-                .map_err(|_| ServiceError::network("client", "无法创建 HTTP 客户端"))?,
+            timeout,
             credential: credential.into(),
+            cancel_flag: None,
         })
+    }
+
+    pub fn with_cancel_flag(mut self, flag: &'static AtomicBool) -> Self {
+        self.cancel_flag = Some(flag);
+        self
+    }
+
+    fn check_cancelled(&self) -> ServiceResult<()> {
+        if self
+            .cancel_flag
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            Err(ServiceError::cancelled("query"))
+        } else {
+            Ok(())
+        }
     }
 }
 impl QueryBackend for HttpQueryBackend {
     fn auth_context(&mut self) -> ServiceResult<UploadAuthContext> {
-        fetch_identity_for_token_with_endpoints(&self.endpoints, &self.client, &self.credential)
-            .map(|(auth, _)| auth)
-            .map_err(|e| classify("auth", e))
+        self.check_cancelled()?;
+        crate::cancellable_query::identity(
+            self.timeout,
+            &self.endpoints,
+            &self.credential,
+            self.cancel_flag,
+        )
+        .map_err(|error| classify_request("auth", self.cancel_flag, error))
     }
     fn devices(&mut self, auth: &UploadAuthContext) -> ServiceResult<Vec<DashboardDevice>> {
-        let raw = fetch_devices_with_endpoints(&self.endpoints, &self.client, &auth.bearer)
-            .map_err(|e| classify("devices", e))?;
+        self.check_cancelled()?;
+        let raw = crate::cancellable_query::devices(
+            self.timeout,
+            &self.endpoints,
+            auth,
+            self.cancel_flag,
+        )
+        .map_err(|error| classify_request("devices", self.cancel_flag, error))?;
         Ok(build_dashboard_devices(raw, Vec::new()))
     }
     fn storage(&mut self, auth: &UploadAuthContext) -> ServiceResult<StorageReading> {
-        let value = fetch_storage_with_endpoints(&self.endpoints, &self.client, &auth.bearer)
-            .map_err(|e| classify("storage", e))?;
+        self.check_cancelled()?;
+        let value = crate::cancellable_query::storage(
+            self.timeout,
+            &self.endpoints,
+            auth,
+            self.cancel_flag,
+        )
+        .map_err(|error| classify_request("storage", self.cancel_flag, error))?;
         let used = crate::util::parse_u64_field(&value, "usedSize")
             .or_else(|| crate::util::parse_u64_field(&value, "used"));
         let limit = crate::util::parse_u64_field(&value, "totalSize")
@@ -1662,20 +1896,15 @@ impl QueryBackend for HttpQueryBackend {
         })
     }
     fn reading(&mut self, auth: &UploadAuthContext, date: &str) -> ServiceResult<ReadingStats> {
-        let reading_info =
-            fetch_reading_info_with_endpoints(&self.endpoints, &self.client, &auth.bearer)
-                .map_err(|e| classify("reading", e))?;
-        let week = fetch_read_time_info_with_endpoints(
+        self.check_cancelled()?;
+        let (reading_info, week, day) = crate::cancellable_query::reading(
+            self.timeout,
             &self.endpoints,
-            &self.client,
-            &auth.bearer,
+            auth,
             date,
-            "week",
+            self.cancel_flag,
         )
-        .map_err(|e| classify("reading", e))?;
-        let day =
-            fetch_day_read_with_endpoints(&self.endpoints, &self.client, &auth.bearer, date, date)
-                .map_err(|e| classify("reading", e))?;
+        .map_err(|error| classify_request("reading", self.cancel_flag, error))?;
         Ok(ReadingStats {
             date: date.to_string(),
             timezone: None,

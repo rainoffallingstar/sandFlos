@@ -62,7 +62,8 @@ impl DeferredQueueReadBackend {
                         &oss,
                     )?,
                     None => HttpQueueReadBackend::new(self.timeout, credential)?,
-                },
+                }
+                .with_cancel_flag(&crate::cancel::FLAG),
             );
         }
         Ok(self.inner.as_mut().expect("initialized queue backend"))

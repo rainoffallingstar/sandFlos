@@ -143,7 +143,8 @@ fn query_service(options: &GlobalOptions) -> Result<QueryService<HttpQueryBacken
         Some((api, oss)) => HttpQueryBackend::with_test_endpoints(timeout, credential, &api, &oss),
         None => HttpQueryBackend::new(timeout, credential),
     }
-    .map_err(CliError::from_service)?;
+    .map_err(CliError::from_service)?
+    .with_cancel_flag(&crate::cancel::FLAG);
     Ok(QueryService::new(backend))
 }
 
