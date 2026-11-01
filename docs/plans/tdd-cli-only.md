@@ -107,6 +107,28 @@ README / docs / CI 文本修订完成后，重跑同一命令（`/tmp/sandflos-c
 267 项 Rust + 7 项 Python，fmt/clippy/release/依赖边界/无显示/打包/产物校验
 全通过，日志 `/tmp/sandflos-cli-only-flakefix-check.log`。
 
+## 方案 B 验证
+
+删除桌面代码后重跑同一命令：退出 `0`，**255 项 Rust**（原 267 减去被删的
+12 项 `desktop_refresh` 契约测试）+ 7 项 Python，fmt/clippy/release/依赖边界/
+无显示/打包/产物校验全通过，日志 `/tmp/sandflos-cli-only-planb-check.log`。
+
+- `cargo tree -p sandflos-cli -e normal` 中已无 `gpui`、`gpui-component`、
+  `tauri`、`rfd`、`tray-icon`、`auto-launch`。
+- `Cargo.lock`：8958 → 2252 行，删除 536 个包，无新增包；`dirs`/`digest`/
+  `block-buffer`/`crypto-common`/`rand_chacha`/`redox_users`/`dirs-sys` 回到
+  CLI 实际约束的版本（此前被桌面依赖抬高）。
+- 远端 CI run `41258397146`：6/6 success（三个 CLI + 三个下载产物复验）。
+- 桌面实现仍可从 `main` 分支历史取回；本分支不保留副本。
+
+## 已知限制（方案 B 后）
+
+- `crates/core` 仍含桌面时代的兼容包装（`dashboard` 严格刷新、
+  `push::perform_native_uploads` / `dashboard_push_resend` / `dashboard_push_delete`、
+  `state` 全局缓存）。它们不引入桌面依赖，属后续单独重构，不在本片范围。
+- 真实平台验收仍未执行：系统凭据存储、扫码登录、BOOX/OSS/WebDAV、
+  设备接收、tag→draft release。
+
 ## 关于 OSS 签名的澄清
 
 清理过程中一度怀疑 `HttpPushBackend::upload_bytes` 的 OSS `string_to_sign` 漏了
