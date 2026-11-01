@@ -17,16 +17,41 @@ use std::{
 };
 
 fn http_request(port: u16, target: &str) -> std::io::Result<(u16, String)> {
+    let deadline = Instant::now() + Duration::from_secs(3);
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_millis(500)))?;
     write!(
         stream,
-        "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        "GET {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
     )?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response)?;
+    let mut raw = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "loopback response exceeded absolute deadline",
+            ));
+        }
+        stream.set_read_timeout(Some(remaining.min(Duration::from_millis(500))))?;
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => raw.extend_from_slice(&buffer[..read]),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    let response = String::from_utf8(raw)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
     let status = response
         .lines()
         .next()
