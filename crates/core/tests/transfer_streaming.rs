@@ -412,12 +412,16 @@ fn upload_authorization_signs_the_canonical_resource_independently() {
 
 #[test]
 fn slow_reader_produces_multiple_distinct_read_samples_before_completion() {
+    // Slow the receiver enough that the production 25 ms sampler observes
+    // several distinct reads, while keeping the whole fixture comfortably
+    // inside the request timeout even on a loaded CI runner: 4 MiB in 64 KiB
+    // chunks with a 5 ms pause is only ~64 pauses (~0.3 s of server delay).
     let server =
-        OssFixture::start_with_options(None, false, Some((64 * 1024, Duration::from_millis(10))));
-    let payload = vec![b's'; 16 * 1024 * 1024];
+        OssFixture::start_with_options(None, false, Some((64 * 1024, Duration::from_millis(5))));
+    let payload = vec![b's'; 4 * 1024 * 1024];
     let path = temp_file(&payload);
     let mut backend = HttpPushBackend::with_test_endpoints(
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         "credential",
         &server.endpoint,
         &server.endpoint,
@@ -440,7 +444,7 @@ fn slow_reader_produces_multiple_distinct_read_samples_before_completion() {
     let observations = receiver.try_iter().collect::<Vec<_>>();
     assert!(
         observations.len() >= 2,
-        "a slow 16 MiB body must expose continuous progress, got {observations:?}"
+        "a slow 4 MiB body must expose continuous progress, got {observations:?}"
     );
     assert!(
         observations.windows(2).all(|pair| pair[0] < pair[1]),

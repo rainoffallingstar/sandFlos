@@ -58,3 +58,32 @@ README / docs / CI 文本修订完成后，重跑同一命令（`/tmp/sandflos-c
 - 远端 CI 对当前提交尚无 run；本机通过不等于远端三个平台通过。
 - 真实凭据、扫码、BOOX/OSS/WebDAV、设备接收与 tag→draft release 仍未验收。
 - `crates/core` 中 `dashboard`、`device`、`auth_service` 仍被 CLI 使用，不能按“桌面代码”删除。真正只服务桌面的入口（如 `build_dashboard_snapshot` 的全局兼容包装）留待后续按 CLI 需求单独收口。
+
+## CI 失败与测试加固
+
+首次推送 `0113905` 的 CI run `41255922160`：ubuntu 与 windows 通过，macOS 在
+`transfer_streaming::slow_reader_produces_multiple_distinct_read_samples_before_completion`
+失败——`ServiceError { kind: Network, message: "网络请求超时" }`。
+
+原因是既有测试的时序余量不足，不是本片改动：该用例让回环服务器按 64 KiB / 10 ms
+接收 16 MiB，同时上传请求超时写死 10 秒。慢 runner 上接收延迟本身就要 ~2.6 秒，
+叠加 reqwest/CI 调度即可越过 10 秒，被误判成网络失败。本机连续 5 次均通过
+（约 3.7–4.1 秒），说明它只在受载环境暴露。
+
+加固方式（仅测试）：payload 降到 4 MiB、服务器延迟改为 5 ms（约 64 次暂停、
+~0.3 秒延迟），请求超时放宽到 30 秒。断言不变——仍要求 ≥2 个严格递增的读取
+样本、样本不超过文件大小、最后样本等于文件大小、单次 PUT。改后本机连续 3 次
+全通过，整个测试文件从约 4 秒降到约 0.5 秒。
+
+复验：`CARGO_NET_OFFLINE=true bash scripts/check_cli.sh` 退出 `0`，
+267 项 Rust + 7 项 Python，fmt/clippy/release/依赖边界/无显示/打包/产物校验
+全通过，日志 `/tmp/sandflos-cli-only-flakefix-check.log`。
+
+## 关于 OSS 签名的澄清
+
+清理过程中一度怀疑 `HttpPushBackend::upload_bytes` 的 OSS `string_to_sign` 漏了
+canonical resource。逐字符核对后确认签名串是
+`PUT\n\n{content_type}\n{date}\n{token_header}\n{canonical_resource}`，
+与 `push.rs` 的旧实现一致；`transfer_streaming.rs` 的独立 HMAC 期望也以
+`/fixture/fixture/book.pdf` 结尾。**生产签名未发现问题，无代码改动。**
+（此前看到“缺失”是终端对包含 token 字样的字符串做密钥脱敏造成的显示假象。）
