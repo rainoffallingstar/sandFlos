@@ -1,20 +1,48 @@
 # CLI-only 方向：清理与 TDD 记录
 
-2026-10-31 至 2026-11-01。用户决定：`cli` 分支后续只做纯 CLI，不再接入桌面端（方案 A：停止桌面投入，不从分支删除桌面包）。基线 `d3810d0fb5d9646bd18b49da8535a0c6c5cd52bc`（= `origin/cli`），无真实账号、凭据、书库，未创建 tag 或 release。
+2026-10-31 至 2026-11-01。用户先选择方案 A（停止桌面投入），随后升级为**方案 B：从 `cli` 分支删除桌面代码**。基线 `d3810d0fb5d9646bd18b49da8535a0c6c5cd52bc`（= `origin/cli`），无真实账号、凭据、书库，未创建 tag 或 release。
 
 ## 方向决定
 
 - `cli` 分支的产品范围收敛为 `crates/core` + `crates/cli`、`sandflos` 二进制及其发布产物。
-- `crates/app`（GPUI）、`src-tauri`、`dist/`、桌面宣传资产、`release-macos.yml` 与桌面脚本保留在仓库中用于历史兼容和 `main` 分支，但**不属于 cli 分支的构建、测试、CI 或发布目标**。本片不删除它们：删除会与 `main` 产生大差异，也可能误删 CLI 仍在使用的 core 模块（如 `device`、`dashboard`）。
+- 方案 B 执行结果：`crates/app`（GPUI）、`src-tauri`、`dist/`、`assets/`、
+  `release-macos.yml`、`scripts/build_dmg_tauri2.sh` 与
+  `scripts/internal_release_check.sh` 已从 `cli` 分支删除，工作区成员只剩 core 与 cli。
+- 桌面实现的完整历史仍保存在 `main` 分支（git 历史未改写），需要时可从那里取回。
+- `crates/core` 中 CLI 仍在使用的模块（`api`、`auth*`、`push`、`device`、
+  `dashboard`、`zotero`、`calibre`、`cli_libraries`、`persistence`、
+  `cancellable_*`、`state`、`diagnostics`）全部保留，不按“桌面代码”删除。
 - 未完成的桌面迁移计划（app-owned 登录会话、上传/队列迁移、桌面人工回归）不再作为 cli 分支的待办。
 
 ## 实际改动
+
+方案 A（提交 `0113905`）：
 
 1. `.github/workflows/cli.yml`：移除 `desktop-compatibility` job（原为 `cargo check --locked -p send2boox-desktop-gpui`）。其余 cli / verify-package 三个平台 job 不变。
 2. `README.md`：从“GPUI 桌面控制中心”改写为 CLI 产品说明；去掉桌面构建、托盘、窗口、`src-tauri`、`crates/app` 宣传。
 3. `docs/cli.md`：去掉桌面构建指引、桌面 CI 说明与桌面配置互操作措辞，明确本分支只构建、测试和发布 CLI。
 4. `docs/plans/cli-github-status.md`：记录方向变更与归档位置。
 5. 撤回上一片未提交的桌面登录会话工作区（见下）。
+
+方案 B（本片）：
+
+1. `git rm -r`：`crates/app`(17 文件)、`src-tauri`(32)、`dist`(4)、`assets`(2)、
+   `.github/workflows/release-macos.yml`(1)、`scripts/build_dmg_tauri2.sh`(1)、
+   `scripts/internal_release_check.sh`(1)。
+2. `Cargo.toml`：members/default-members 只剩 `crates/core`、`crates/cli`；移除
+   `exclude = ["src-tauri", "dist"]`。
+3. `Cargo.lock`：由 8958 行剪到 2252 行，删除 536 个桌面依赖包（gpui、
+   gpui-component、tauri、rfd、tray-icon、auto-launch 等）。
+4. 删除 `crates/core/tests/desktop_refresh.rs`（12 项桌面刷新契约测试）。
+5. `.gitignore`：去掉 `src-tauri/target/`、`.build-cache.noindex/`、`*.app`。
+6. `README.md` / `docs/cli.md`：去掉“仓库仍保留桌面包”的措辞。
+
+### 有意保留的 core 桌面兼容入口
+
+`crates/core/src/dashboard.rs`（`DashboardRefreshInput`、严格刷新）、
+`push.rs` 的桌面包装（`perform_native_uploads`、`dashboard_push_resend` 等）与
+`state.rs` 的全局缓存仍在 core 中。它们不引入桌面依赖，CLI 依赖闭包也不包含
+GPUI/Tauri；删除它们属于单独的重构，不在本片“移除桌面端”的范围内。
 
 ## 撤回桌面会话工作区
 

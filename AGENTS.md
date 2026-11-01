@@ -3,11 +3,12 @@
 ## Direction (2026-11-01)
 
 The `cli` branch is **CLI-only**. Do not add or extend desktop integration here.
-`crates/app` (GPUI), `src-tauri`, `dist/`, desktop assets, `release-macos.yml`
-and the desktop scripts remain in the repository for historical compatibility
-and for `main`, but they are not build/test/CI/release targets of this branch.
-The desktop login-session, app-owned upload/queue migration, and desktop manual
-acceptance items are cancelled for this branch.
+Plan B was executed: `crates/app` (GPUI), `src-tauri`, `dist/`, `assets/`,
+`release-macos.yml` and the desktop scripts were deleted from this branch. The
+workspace is `crates/core` + `crates/cli` only. The desktop implementation is
+still available in the `main` branch history if ever needed. The desktop
+login-session, app-owned upload/queue migration, and desktop manual acceptance
+items are cancelled for this branch.
 
 See `docs/plans/tdd-cli-only.md` for the cleanup record and evidence, and
 `docs/plans/cli-github-status.md` for the CI state.
@@ -33,7 +34,8 @@ See `docs/plans/tdd-cli-only.md` for the cleanup record and evidence, and
 - Document tests, exact commands, exit codes, log paths, and honest limits.
 - `crates/core` modules used by CLI (`api`, `auth*`, `push`, `device`,
   `dashboard`, `zotero`, `calibre`, `cli_libraries`, `persistence`,
-  `cancellable_*`) are in scope; do not delete them as "desktop code".
+  `state`, `diagnostics`, `cancellable_*`) are in scope; do not delete them as
+  "desktop code" — several still carry desktop-era compatibility wrappers.
 
 ## Completed slices (do not redo)
 
@@ -45,14 +47,12 @@ The desktop refresh *app wiring* is out of scope now; the core
 
 ## Current state
 
-- Base/HEAD: `d3810d0fb5d9646bd18b49da8535a0c6c5cd52bc` (= `origin/cli`).
+- Base/HEAD before this slice: `e9ff2ee` (= `origin/cli`).
+- Desktop trees deleted; `Cargo.lock` pruned from 8958 to 2252 lines.
 - `desktop-compatibility` CI job removed; CLI jobs unchanged.
 - README and `docs/cli.md` describe CLI only.
-- Commits `0113905` and `66b9bf2` are pushed to `origin/cli`.
-- Unified check: 267 Rust + 7 Python, exit 0
+- Unified check before the deletion: 267 Rust + 7 Python, exit 0
   (`/tmp/sandflos-cli-only-flakefix-check.log`).
-- Remote CI run `41257052317`: 6/6 success (three CLI jobs + three
-  download/verify jobs; no desktop job).
 - Outstanding: real-platform acceptance (credentials, QR, BOOX/OSS/WebDAV,
   device receipt, tag→draft release).
 

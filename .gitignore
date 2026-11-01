@@ -15,11 +15,9 @@
 .env.*
 !.env.example
 
-# Rust / Tauri build outputs
+# Rust build outputs
 target/
 cli-package/
-src-tauri/target/
-.build-cache.noindex/
 
 # Cargo / rust backup
 **/*.rs.bk
@@ -32,7 +30,4 @@ __pycache__/
 sandflos-artifact.zip
 *.tmp
 *.temp
-
-# macOS app bundles (build artifacts)
-*.app
 

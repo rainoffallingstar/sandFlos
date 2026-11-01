@@ -2,7 +2,7 @@
 
 **sandFlos** 的命令行工具：把本地书和文档推送到 BOOX 墨水屏设备，覆盖登录授权、云空间、设备、阅读指标、互动文件队列，以及 Zotero / Calibre 本地书库。
 
-`cli` 分支只维护 CLI，不包含桌面端接入，也不需要窗口、浏览器、托盘或显示服务。
+仓库只维护 CLI，不含桌面端代码，也不需要窗口、浏览器、托盘或显示服务。
 
 ## 安装与运行
 
@@ -55,7 +55,7 @@ sandflos --json reading
 bash scripts/check_cli.sh
 ```
 
-脚本运行核心与 CLI 测试、CLI lint、release 构建、依赖边界检查和无显示环境 smoke；本分支不再包含桌面兼容性检查。CI 配置通过不代表真实扫码、云端推送或设备接收已经验收。
+脚本运行核心与 CLI 测试、CLI lint、release 构建、依赖边界检查和无显示环境 smoke。CI 配置通过不代表真实扫码、云端推送或设备接收已经验收。
 
 ## 架构
 
@@ -72,6 +72,8 @@ sandFlos
 │   └── dashboard.rs      # 仪表盘快照聚合
 └── crates/cli/           # sandflos 命令行入口
 ```
+
+工作区只有这两个 crate；桌面端实现不在本仓库当前分支中。
 
 ## License
 
