@@ -48,10 +48,13 @@ The desktop refresh *app wiring* is out of scope now; the core
 - Base/HEAD: `d3810d0fb5d9646bd18b49da8535a0c6c5cd52bc` (= `origin/cli`).
 - `desktop-compatibility` CI job removed; CLI jobs unchanged.
 - README and `docs/cli.md` describe CLI only.
+- Commits `0113905` and `66b9bf2` are pushed to `origin/cli`.
 - Unified check: 267 Rust + 7 Python, exit 0
-  (`/tmp/sandflos-cli-post-cleanup-check.log`).
-- Outstanding: remote CI run for the new commit, and real-platform acceptance
-  (credentials, QR, BOOX/OSS/WebDAV, device receipt, tag→draft release).
+  (`/tmp/sandflos-cli-only-flakefix-check.log`).
+- Remote CI run `41257052317`: 6/6 success (three CLI jobs + three
+  download/verify jobs; no desktop job).
+- Outstanding: real-platform acceptance (credentials, QR, BOOX/OSS/WebDAV,
+  device receipt, tag→draft release).
 
 ## Next work
 
