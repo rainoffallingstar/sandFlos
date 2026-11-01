@@ -1,109 +1,77 @@
-<p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="sandFlos — 把书和文档推送到 BOOX 墨水屏设备的 Rust 原生桌面控制中心">
-</p>
+# sandFlos CLI
 
-# sandFlos
+**sandFlos** 的命令行工具：把本地书和文档推送到 BOOX 墨水屏设备，覆盖登录授权、云空间、设备、阅读指标、互动文件队列，以及 Zotero / Calibre 本地书库。
 
-**sandFlos** 是 100% Rust 编写、GPUI 原生 GPU 渲染的桌面控制中心。它把「上传 → 推送」到 BOOX 墨水屏设备的流程，收敛成一个本地原生应用：登录授权、云空间、设备、阅读指标、互动文件队列、Zotero 与 Calibre 双书库，全部在 Rust 进程中完成，不依赖任何 WebView。
+`cli` 分支只维护 CLI，不包含桌面端接入，也不需要窗口、浏览器、托盘或显示服务。
 
-## 为什么是 sandFlos
+## 安装与运行
 
-| | 传统 WebView 方案 | sandFlos |
-| --- | --- | --- |
-| 渲染 | WebView / WebKit 进程 | GPUI 原生 GPU 渲染 |
-| 前端 | HTML / CSS / JS | Rust 直接驱动 UI |
-| 通信 | JSON IPC 序列化 | 同进程直接调用 |
-| 内存占用 | 通常 100MB+ | 约 20–40MB |
-| 冷启动 | 数百毫秒 | 瞬时 |
+```bash
+cargo build --locked --release -p sandflos-cli
+./target/release/sandflos --help
+```
 
-- **无 WebView、无 PouchDB、无隐藏页面注入**：彻底移除旧架构的浏览器桥接层。
-- **登录授权**：默认浏览器打开本地回环登录页，二维码授权后 token 直接回流桌面端。
-- **Rust 直传 OSS**：STS 签名 + 分片进度上报，实时显示速度、剩余时间（ETA）与结果。
+Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。GitHub Actions 为 Linux / macOS / Windows 构建独立二进制与带校验和的发布包。
 
-## 核心能力
+## 快速开始
 
-- **概览仪表盘**：授权状态、在线设备、今日阅读、互动文件队列，一张快照看全。
-- **互动文件队列**：原生「重推」「删除」，实时上传进度条 + 速度 + ETA。
-- **设备与互传**：局域网设备识别，安全的互传地址打开（仅允许合法局域网地址）。
-- **阅读指标**：今日阅读、本周时长、累计完成，直接聚合云端数据。
-- **Zotero 工作流**：直接读本地 `zotero.sqlite`，附件缺失时走 WebDAV 拉取后推送。
-- **Calibre 工作流**：读取 `metadata.db`，按书籍格式（EPUB / PDF / AZW3 / MOBI）一键推送。
-- **系统托盘**：登录、上传、刷新、开机自启动开关、退出，左键显示/隐藏。
+```bash
+# 登录：默认浏览器打开本地回环登录页，token 回流后保存在系统凭据存储
+sandflos auth login
 
-<p align="center">
-  <img src="./assets/readme/workflow.svg" width="100%" alt="sandFlos 推送工作流：登录授权 → 选择文件 → Rust 直传 OSS → 推送到 BOOX 设备">
-</p>
+# 查看授权与本地凭据状态（加 --verify 才会访问网络）
+sandflos --json auth status
+
+# 上传并推送到设备
+sandflos push ./book.epub
+
+# 只读查询
+sandflos --json devices
+sandflos --json storage
+sandflos --json reading
+```
+
+配置、认证、推送、书库命令和退出码见 [CLI 使用说明](docs/cli.md)。
+
+## 能力
+
+- **登录授权**：本地回环登录页 + 默认浏览器完成二维码授权，token 直接进入 CLI 凭据存储。
+- **直传 OSS**：STS 签名 + 分片上传，`read` 表示本地读取、`uploaded` 表示 OSS 已确认。
+- **可中断**：SIGINT 中断认证、配额、bucket、STS、上传、消息写入、同步确认和最终提交，退出 130 并停止后续文件。
+- **安全的失败语义**：已确认成功保留；可能已写入但未确认的结果返回 unknown / 部分完成（退出 6），不盲目重试。
+- **只读查询与队列**：devices / storage / reading 与 queue list/resend/delete 均可取消。
+- **本地书库**：直接读 Zotero `zotero.sqlite`（缺附件时走 WebDAV）与 Calibre `metadata.db`，不复制协议。
+- **脚本友好**：`--json` 输出单一 JSON 对象，退出码稳定，stderr 只放进度与诊断。
+
+## 自动化契约
+
+`--json` 的 stdout 为一个 JSON 对象，包含 `schema_version`、`ok`、`data`、`error`。退出码：0 成功、1 内部错误、2 参数错误、3 认证错误、4 网络/服务端错误、5 本地配置或 I/O 错误、6 部分完成或结果未知、130 取消。
+
+详细说明见 [docs/cli.md](docs/cli.md)。
+
+## 开发验证
+
+```bash
+bash scripts/check_cli.sh
+```
+
+脚本运行核心与 CLI 测试、CLI lint、release 构建、依赖边界检查和无显示环境 smoke；本分支不再包含桌面兼容性检查。CI 配置通过不代表真实扫码、云端推送或设备接收已经验收。
 
 ## 架构
 
 ```
 sandFlos
-├── crates/core/          # 纯 Rust 领域逻辑（与 UI 框架解耦）
+├── crates/core/          # 纯 Rust 领域逻辑（无 UI 依赖）
 │   ├── api.rs            # Send2Boox API / OSS / STS / neocloud
-│   ├── auth.rs           # 本地回环登录与二维码授权回流
-│   ├── push.rs           # OSS 直传状态机与推送队列
-│   ├── device.rs         # 局域网设备发现与互传校验
-│   ├── zotero.rs         # Zotero SQLite + WebDAV 同步
-│   ├── calibre.rs        # Calibre metadata.db 读取与直传
+│   ├── auth*.rs          # 回环登录、凭据存储与会话
+│   ├── push.rs           # 上传状态机与推送队列
+│   ├── cancellable_*.rs  # 可取消的 push / 查询 / 队列阶段
+│   ├── device.rs         # 局域网设备识别与互传地址校验
+│   ├── zotero.rs         # Zotero SQLite + WebDAV
+│   ├── calibre.rs        # Calibre metadata.db
 │   └── dashboard.rs      # 仪表盘快照聚合
-└── crates/app/           # GPUI 原生前端
-    ├── components/       # 侧栏、工具栏等 UI 组件
-    └── views/            # 概览 / 互动文件 / 设备 / 阅读 / Zotero / Calibre
+└── crates/cli/           # sandflos 命令行入口
 ```
-
-## 快速开始
-
-### 运行（开发）
-
-```bash
-cd /Volumes/DataCenter_01/boox-tauri
-cargo build --release -p send2boox-desktop-gpui
-./target/release/send2boox-desktop-gpui
-```
-
-### 打包 macOS .app
-
-```bash
-cargo build --release -p send2boox-desktop-gpui
-# 将 target/release/send2boox-desktop-gpui 放入 .app/Contents/MacOS/，
-# 并配置 Info.plist 与 Resources 图标后，用 open 打开即可
-```
-
-> 项目也保留旧版 `src-tauri`（Tauri）构建目录，但**当前产品形态是 GPUI 原生版**，即 `crates/app`。
-
-## 登录与授权
-
-1. 点击「登录并授权」，桌面端启动本地回环端口并打开默认浏览器。
-2. 在浏览器中完成官方二维码登录。
-3. token 自动回流桌面端，回到本地仪表盘——无需抓取网页标题、hash 或 cookie。
-
-## 测试
-
-```bash
-cd /Volumes/DataCenter_01/boox-tauri
-cargo test --workspace
-```
-
-## 项目结构约定
-
-- 新增业务逻辑优先放入 `crates/core`，与 UI 无关、可独立测试。
-- UI 组件与视图放入 `crates/app`，通过 `Entity<AppState>` 响应式状态驱动。
-- 本地数据（登录态、Zotero / Calibre 配置）默认位于
-  `~/Library/Application Support/com.fallingstar.send2boox/`。
-
-## 纯 CLI
-
-无需桌面或浏览器，可独立编译和运行：
-
-```bash
-cargo build --locked --release -p sandflos-cli
-./target/release/sandflos --help
-./target/release/sandflos --json auth status
-```
-
-配置、认证、推送和书库命令见 [CLI 使用说明](docs/cli.md)。退出码与 JSON 输出适合脚本调用；CLI 使用独立配置目录。桌面端继续通过 `-p send2boox-desktop-gpui` 构建。
-
-[架构与 TDD 方案](docs/plans/cli-review-and-tdd.md) · [实施与验收记录](docs/plans/tdd-integration.md)
 
 ## License
 

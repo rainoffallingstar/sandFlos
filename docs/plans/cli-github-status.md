@@ -1,11 +1,9 @@
 # GitHub 构建状态核对
 
-2026-10-31 UTC本轮只读gh复核：远端cli HEAD仍3cc6fb7f29167bd722487c5fde0008c29f3f63ae；最新CLI run41024736353的headSha为旧c460ab66704e4d253b954fc85d089c420d04a3a8，completed/success。历史job清单Linux/macOS/Windows CLI三项、下载产物验证三项、macOS桌面兼容一项，共7/7 success，2026-10-30完成。3cc6fb7为随后skip-ci文档提交，不能声称它另有绿色run。
+2026-10-31：用户最新明确允许父提交代码，已将此前七片已验收改动提交为 `d3810d0fb5d9646bd18b49da8535a0c6c5cd52bc` 并发布到远端cli。Git HTTPS连接github.com:443失败；父经GitHub Git Data API发布相同blob/tree/commit SHA并非强制更新ref，远端API已核实相同SHA，没有改写历史。
 
-- [x] 前六片保留；桌面刷新显式输入/错误保留已实施与审查，Red历史未独立核实的限制及直接Green区分。
-- [x] 最终本机267Rust、7Python，fmt/strictclippy/release/依赖边界/无显示/打包运行通过，日志/tmp/sandflos-cli-desktop-refresh-final-check.log。
-- [x] 最新run的SHA/status与远端分支HEAD已核对。
-- [ ] 当前工作区三平台CI：无对应远端SHA/run，旧成功不覆盖。AGENTS禁止commit/push，本轮未提交推送。
-- [ ] 完整桌面app-owned登录/上传迁移、桌面编译/人工回归、登录上游/旧桌面阻塞及真实平台生产验收。dashboard刷新错误保留已完成。
+对应run **41190025958，7/7 success**：Linux/macOS/Windows CLI三项、下载产物原生运行三项、macOS desktop-compatibility一项。覆盖的是d3810d0；后续桌面session工作区尚需新SHA CI。本机缺aes缓存的桌面类型检查缺口，已由本次macOS cargo check补齐，不代表人工桌面回归。
 
-CI成功run的actions Node版本维护提示仍留档，后续单独官方迁移验证；不是构建失败。整体清单尚未全部完成。
+旧c460ab6/run41024736353仅为历史，不再作当前最新验收。本轮不创建tag/release或使用真实业务账号。
+
+2026-10-31 方向变更：`cli` 分支后续只做纯 CLI，不再接入桌面端。未提交的桌面 session 工作区已撤回，源码/测试/TDD 文档归档在工作区外的 `/tmp/sandflos-desktop-session-wip`（`tracked.patch` + 未跟踪文件副本），未提交、未推送。因此上面 run 41190025958 的 desktop-compatibility 一项只代表旧 SHA 的历史结果，不再是本分支的目标。工作区现无桌面 session 改动，也没有对应新 SHA/run。

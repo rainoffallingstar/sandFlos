@@ -1,5 +1,7 @@
 # 桌面刷新第一片：显式凭据与错误保留 TDD 记录
 
+> **2026-11-01 方向变更（已终止）**：`cli` 分支后续只做纯 CLI，不再接入桌面端（方案 A）。本文档所述桌面切片不再作为本分支待办；未提交的桌面登录会话工作区已撤回并归档在 `/tmp/sandflos-desktop-session-wip`。当前范围与验证见 `tdd-cli-only.md`。以下内容保留为历史记录。
+
 2026-10-31，基线 `3cc6fb7` 加当前 working/untracked 状态。本片只迁移 dashboard 刷新，不声称完成桌面 app-owned 会话或上传迁移。无 commit/push/tag/release，无真实账号、凭据、书库或生产服务请求。
 
 ## 公共 seam 与输入

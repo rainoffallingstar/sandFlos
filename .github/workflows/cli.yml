@@ -98,12 +98,3 @@ jobs:
       - name: Verify downloaded package and run binary
         shell: bash
         run: python3 scripts/verify_cli_package.py "$PACKAGE_ZIP"
-  desktop-compatibility:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: '1.97.1'
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --locked -p send2boox-desktop-gpui

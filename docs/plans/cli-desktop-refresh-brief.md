@@ -1,3 +1,5 @@
+> **2026-11-01 方向变更（已终止）**：`cli` 分支后续只做纯 CLI，不再接入桌面端（方案 A）。本文档所述桌面切片不再作为本分支待办；未提交的桌面登录会话工作区已撤回并归档在 `/tmp/sandflos-desktop-session-wip`。当前范围与验证见 `tdd-cli-only.md`。以下内容保留为历史记录。
+
 # 桌面刷新迁移第一片
 
 2026-10-31，基线3cc6fb7+当前working/untracked，已有6片255Rust+7Python完整检查通过，不重做。读AGENTS共同限制、handoff/state-migration/review-and-tdd。用户指定DeepSeek V4.1 Flash high实施，父集成审查；S2/S3已确认。无commit/push/tag/release/真实账号凭据书库。

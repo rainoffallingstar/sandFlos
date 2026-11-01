@@ -1,13 +1,13 @@
 # sandFlos CLI
 
-CLI 与 GPUI 桌面端共享 Rust 核心，但无需窗口、浏览器、托盘或显示服务。源码构建：
+`cli` 分支只维护命令行工具，不包含桌面端接入，也不需要窗口、浏览器、托盘或显示服务。源码构建：
 
 ```bash
 cargo build --locked --release -p sandflos-cli
 ./target/release/sandflos --help
 ```
 
-Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。默认工作区成员为 core 和 cli；构建桌面端请显式指定 `-p send2boox-desktop-gpui`。
+Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。工作区仍保留桌面包用于历史兼容，但本分支只构建、测试和发布 CLI（`-p boox-core -p sandflos-cli`），CI 不再检查桌面目标。
 
 ## 自动化契约
 
@@ -17,9 +17,9 @@ Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固�
 
 非 JSON 推送进度中的 `read <bytes>/<total> bytes` 表示从本地文件读取的字节；`uploaded` 表示 OSS 已确认上传。读完文件不能证明上传或最终推送成功。进度按时间采样，快速文件可能只出现一次读取事件。
 
-SIGINT 可中断 push 中正在等待的认证、配额、bucket、STS、签名链接校验、OSS 上传、消息写入、同步确认和最终提交；退出 130 并停止后续文件。已收到的消息 ID 和已确认成功仍保留，可能已经写入但未收到确认的结果为 unknown，不自动重试。devices、storage、reading 查询也可取消，停止后续查询请求并返回 `cancelled`。queue list/resend/delete也支持取消：写入前取消返回130，可能写入但未确认则保留unknown/部分结果并返回6，已确认成功保留。登录上游和旧桌面路径的其他阻塞请求仍可能等待当前请求超时；`--timeout` 仍是单次请求超时。
+SIGINT 可中断 push 中正在等待的认证、配额、bucket、STS、签名链接校验、OSS 上传、消息写入、同步确认和最终提交；退出 130 并停止后续文件。已收到的消息 ID 和已确认成功仍保留，可能已经写入但未收到确认的结果为 unknown，不自动重试。devices、storage、reading 查询也可取消，停止后续查询请求并返回 `cancelled`。queue list/resend/delete也支持取消：写入前取消返回130，可能写入但未确认则保留unknown/部分结果并返回6，已确认成功保留。登录上游的其他阻塞请求仍可能等待当前请求超时；`--timeout` 仍是单次请求超时。
 
-`--config-dir` / `SANDFLOS_CONFIG_DIR` 选择独立配置目录。`SANDFLOS_TOKEN` 为进程级输入，不自动保存；不要把真实 token 放在命令行参数中。默认使用 macOS Keychain / Windows Credential Manager；Linux 等没有持久后端的环境会明确报错，此时使用 `SANDFLOS_TOKEN`，或显式设置 `SANDFLOS_CREDENTIAL_STORE=file` 以启用 0600 权限的本地凭据文件。CLI 不自动导入或删除桌面配置。
+`--config-dir` / `SANDFLOS_CONFIG_DIR` 选择独立配置目录。`SANDFLOS_TOKEN` 为进程级输入，不自动保存；不要把真实 token 放在命令行参数中。默认使用 macOS Keychain / Windows Credential Manager；Linux 等没有持久后端的环境会明确报错，此时使用 `SANDFLOS_TOKEN`，或显式设置 `SANDFLOS_CREDENTIAL_STORE=file` 以启用 0600 权限的本地凭据文件。CLI 不读写桌面配置目录。
 
 `auth import` 会先调用用户接口验证 token，只有验证通过才保存。凭据被拒时退出 3 且不写文件；网络失败退出 4，原凭据保持不变。`auth status` 默认只检查本地凭据，加 `--verify` 才会访问网络。
 
@@ -29,7 +29,7 @@ SIGINT 可中断 push 中正在等待的认证、配额、bucket、STS、签名�
 bash scripts/check_cli.sh
 ```
 
-脚本运行核心和 CLI 测试、CLI lint、release 构建、依赖边界与无显示环境 smoke。CI 为 Linux/macOS/Windows 构建独立二进制，并另设 macOS 桌面兼容性检查。CI 的配置不代表远端任务已经通过；真实扫码、云端推送和设备接收需单独验收。
+脚本运行核心和 CLI 测试、CLI lint、release 构建、依赖边界与无显示环境 smoke。CI 为 Linux/macOS/Windows 构建独立二进制并复验下载产物；本分支不再有桌面兼容性检查。CI 的配置不代表远端任务已经通过；真实扫码、云端推送和设备接收需单独验收。
 
 ## 发布产物校验
 
@@ -53,7 +53,7 @@ python3 scripts/package_cli.py --output cli-package
 python3 scripts/verify_cli_package.py cli-package
 ```
 
-CLI 独立发布使用 `cli-v<版本>` 标签，例如当前 CLI crate 的 `cli-v0.1.0`，与桌面端每日发布流程分开。`release-cli.yml` 先核对标签与 `crates/cli/Cargo.toml` 版本一致，再在三个平台执行完整检查、生成原生 ZIP 与外部 `.zip.sha256` 校验和、解压运行校验。三个包全部通过后创建 **draft release**，由维护者检查后发布；流程不覆盖已有发布或标签。
+CLI 独立发布使用 `cli-v<版本>` 标签，例如当前 CLI crate 的 `cli-v0.1.0`，与仓库其他发布流程相互独立。`release-cli.yml` 先核对标签与 `crates/cli/Cargo.toml` 版本一致，再在三个平台执行完整检查、生成原生 ZIP 与外部 `.zip.sha256` 校验和、解压运行校验。三个包全部通过后创建 **draft release**，由维护者检查后发布；流程不覆盖已有发布或标签。
 
 维护者也可从 Actions 手动运行 `CLI release`，选择待验证的分支或 ref，填写与该 ref 的 CLI manifest 版本匹配的标签字符串。手动模式校验和打包所选 ref，不切换到同名标签，该标签也不必已存在；仅上传验收产物，不创建发布或标签。真实标签触发到 draft release 的事件链尚未执行。下载 ZIP 后可使用上述校验器；包内 `SHA256SUMS` 覆盖二进制和 README，外部 `.zip.sha256` 覆盖整个下载文件。
 

@@ -1,3 +1,5 @@
+> **2026-11-01 方向变更（已终止）**：`cli` 分支后续只做纯 CLI，不再接入桌面端（方案 A）。本文档所述桌面切片不再作为本分支待办；未提交的桌面登录会话工作区已撤回并归档在 `/tmp/sandflos-desktop-session-wip`。当前范围与验证见 `tdd-cli-only.md`。以下内容保留为历史记录。
+
 # 桌面登录会话下一片
 
 2026-10-31，base3cc6fb7+七片既有改动，已267Rust7Python全通过。用户允许父commit/push；子agent禁止提交。S2/S3已确认，合成回环/显式临时store，绝不触碰真实用户缓存/keyring/accounts。
