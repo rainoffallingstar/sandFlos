@@ -64,7 +64,7 @@ fn body_read_complete_without_an_oss_acknowledgment_is_not_accepted() {
         &dir.config_dir(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
     .unwrap();
     assert_eq!(output.status.code(), Some(4), "{}", stdout(&output));
@@ -91,7 +91,7 @@ fn synchronization_errors_never_echo_remote_revision_into_json_or_logs() {
         &dir.config_dir(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
     .unwrap();
     assert_eq!(output.status.code(), Some(6), "{}", stdout(&output));

@@ -32,7 +32,7 @@ fn run() -> Result<(), CliError> {
             Ok(())
         }
         Parsed::Version => {
-            println!("sandflos {}", env!("CARGO_PKG_VERSION"));
+            println!("booxctl {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Parsed::Command {
@@ -58,7 +58,7 @@ fn run() -> Result<(), CliError> {
                 output::emit_error(options.json, error);
                 if options.verbose {
                     eprintln!(
-                        "sandflos: error code={} stable_code={} exit={}",
+                        "booxctl: error code={} stable_code={} exit={}",
                         error.code.as_str(),
                         error.stable_code.as_deref().unwrap_or("-"),
                         error.code.exit_code()

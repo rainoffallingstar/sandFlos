@@ -47,7 +47,7 @@ fn join_bounded(worker: std::thread::JoinHandle<()>) {
 
 #[test]
 fn library_configuration_is_isolated_and_validated() {
-    let root = std::env::temp_dir().join(format!("sandflos-libraries-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("booxctl-libraries-{}", uuid::Uuid::new_v4()));
     let first = root.join("first");
     let second = root.join("second");
     let library = root.join("books");
@@ -96,7 +96,7 @@ fn calibre_configuration_rejects_a_books_table_without_the_required_schema() {
 #[test]
 fn selected_library_and_format_resolve_the_expected_book() {
     use boox_core::cli_libraries::{calibre_file, calibre_list};
-    let root = std::env::temp_dir().join(format!("sandflos-books-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("booxctl-books-{}", uuid::Uuid::new_v4()));
     let library = root.join("books");
     let config = root.join("config");
     fs::create_dir_all(library.join("author/book")).unwrap();
@@ -118,7 +118,7 @@ fn selected_library_and_format_resolve_the_expected_book() {
 #[test]
 fn explicit_zotero_directory_resolves_local_attachment() {
     use boox_core::cli_libraries::*;
-    let root = std::env::temp_dir().join(format!("sandflos-zotero-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("booxctl-zotero-{}", uuid::Uuid::new_v4()));
     let data = root.join("data");
     let config = root.join("config");
     fs::create_dir_all(data.join("storage/ABCDEFGH")).unwrap();

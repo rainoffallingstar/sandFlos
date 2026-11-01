@@ -47,7 +47,7 @@ fn configure(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     }
     if libraries.is_empty() {
         return Err(CliError::usage(
-            "usage: sandflos calibre configure --library PATH [--library PATH...]",
+            "usage: booxctl calibre configure --library PATH [--library PATH...]",
         ));
     }
     let config_dir = crate::auth::config_dir(options)?;
@@ -57,7 +57,7 @@ fn configure(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 
 fn status(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if !args.is_empty() {
-        return Err(CliError::usage("usage: sandflos calibre status"));
+        return Err(CliError::usage("usage: booxctl calibre status"));
     }
     let config_dir = crate::auth::config_dir(options)?;
     emit_status(options, &config_dir)
@@ -189,10 +189,10 @@ fn push(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
         }
     }
     let library = library.ok_or_else(|| {
-        CliError::usage("usage: sandflos calibre push --library PATH --data-id ID")
+        CliError::usage("usage: booxctl calibre push --library PATH --data-id ID")
     })?;
     let data_id = data_id.ok_or_else(|| {
-        CliError::usage("usage: sandflos calibre push --library PATH --data-id ID")
+        CliError::usage("usage: booxctl calibre push --library PATH --data-id ID")
     })?;
     let file = calibre_file(&library, data_id).map_err(local_library_error)?;
     crate::push::push_paths(options, &[file])

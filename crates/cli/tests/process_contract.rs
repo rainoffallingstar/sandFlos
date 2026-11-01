@@ -10,7 +10,7 @@ fn help_exits_without_creating_config_or_network() {
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let text = stdout(&output);
     assert!(text.contains("Usage:"), "stdout: {text}");
-    assert!(text.contains("sandflos"), "stdout: {text}");
+    assert!(text.contains("booxctl"), "stdout: {text}");
     assert!(
         !dir.config_dir().exists(),
         "help created configuration at {}",
@@ -25,7 +25,7 @@ fn version_is_available_without_creating_config() {
 
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let text = stdout(&output);
-    assert!(text.contains("sandflos"), "stdout: {text}");
+    assert!(text.contains("booxctl"), "stdout: {text}");
     assert!(
         !dir.config_dir().exists(),
         "version created configuration at {}",
@@ -71,7 +71,7 @@ fn diagnostics_reports_redacted_config_without_credentials() {
     let mut diagnostics = command(&["--json", "diagnostics"], &config);
     diagnostics
         .env("HOME", &home)
-        .env("SANDFLOS_TOKEN", "secret-environment-token");
+        .env("BOOXCTL_TOKEN", "secret-environment-token");
     let output = diagnostics.output().expect("run diagnostics");
 
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));

@@ -38,18 +38,18 @@ fn configure(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 
 fn detect(_options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if !args.is_empty() {
-        return Err(CliError::usage("usage: sandflos zotero detect"));
+        return Err(CliError::usage("usage: booxctl zotero detect"));
     }
     Err(CliError::new(
         CliErrorCode::LocalIo,
-        "automatic Zotero detection is not available in the CLI; use `sandflos zotero configure --data-dir PATH`",
+        "automatic Zotero detection is not available in the CLI; use `booxctl zotero configure --data-dir PATH`",
     )
     .with_stable_code("zotero_detection_unsupported"))
 }
 
 fn status(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if !args.is_empty() {
-        return Err(CliError::usage("usage: sandflos zotero status"));
+        return Err(CliError::usage("usage: booxctl zotero status"));
     }
     emit_status(options)
 }
@@ -104,7 +104,7 @@ fn list(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 fn webdav(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if args.first().map(String::as_str) != Some("configure") {
         return Err(CliError::usage(
-            "usage: sandflos zotero webdav configure --url URL --username USER --password-stdin",
+            "usage: booxctl zotero webdav configure --url URL --username USER --password-stdin",
         ));
     }
     let args = &args[1..];
@@ -228,7 +228,7 @@ fn paging_options(args: &[String], usage: &str) -> Result<PagingOptions, CliErro
 fn single_value<'a>(args: &'a [String], flag: &str, usage: &str) -> Result<&'a str, CliError> {
     match args {
         [key, value] if key == flag && !value.starts_with('-') => Ok(value.as_str()),
-        _ => Err(CliError::usage(format!("usage: sandflos {usage}"))),
+        _ => Err(CliError::usage(format!("usage: booxctl {usage}"))),
     }
 }
 

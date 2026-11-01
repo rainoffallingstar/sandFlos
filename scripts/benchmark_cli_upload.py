@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Opt-in Linux loopback upload benchmark through the real sandflos CLI.
+"""Opt-in Linux loopback upload benchmark through the real booxctl CLI.
 
-Each measured run starts ``sandflos --json push FILE`` with synthetic credentials
+Each measured run starts ``booxctl --json push FILE`` with synthetic credentials
 and loopback API/OSS endpoints.  The fixture follows the request shapes used by
 the CLI transfer tests, streams uploads into SHA-256, and checks exact bytes and
 a single PUT.  The optional Python control reads the whole file before one PUT.
@@ -37,7 +37,7 @@ SIZES_MIB = (8, 200)
 CONTROL_MIB = 200
 CHUNK = 256 * 1024
 BLOCK = MIB
-SEED = b"sandflos-cli-upload-benchmark-v1"
+SEED = b"booxctl-upload-benchmark-v1"
 REV = "1-fixture"
 SAMPLE_SECONDS = 0.001
 SOCKET_TIMEOUT = 60.0
@@ -335,13 +335,13 @@ def run_child(command: list[str], env: dict[str, str]) -> dict:
 def child_env(config_dir: Path, endpoint: str) -> dict[str, str]:
     env = os.environ.copy()
     env.update({
-        "SANDFLOS_CONFIG_DIR": str(config_dir),
-        "SANDFLOS_CREDENTIAL_STORE": "file",
-        "SANDFLOS_TOKEN": "fixture-token",
-        "SANDFLOS_TEST_API_BASE_URL": endpoint,
-        "SANDFLOS_TEST_OSS_BASE_URL": endpoint,
+        "BOOXCTL_CONFIG_DIR": str(config_dir),
+        "BOOXCTL_CREDENTIAL_STORE": "file",
+        "BOOXCTL_TOKEN": "fixture-token",
+        "BOOXCTL_TEST_API_BASE_URL": endpoint,
+        "BOOXCTL_TEST_OSS_BASE_URL": endpoint,
     })
-    for name in ("SANDFLOS_TEST_AUTH_BASE_URL", "DISPLAY", "WAYLAND_DISPLAY"):
+    for name in ("BOOXCTL_TEST_AUTH_BASE_URL", "DISPLAY", "WAYLAND_DISPLAY"):
         env.pop(name, None)
     return env
 
@@ -510,7 +510,7 @@ def main(argv: list[str]) -> int:
     if argv and argv[0] == "_buffered_client":
         return run_buffered_client(argv[1:])
     parser = argparse.ArgumentParser(description="Opt-in Linux loopback CLI upload benchmark.")
-    parser.add_argument("--binary", type=Path, default=Path("target/release/sandflos"))
+    parser.add_argument("--binary", type=Path, default=Path("target/release/booxctl"))
     parser.add_argument("--runs", type=int, default=1, help="runs at each fixed size (default: 1)")
     parser.add_argument("--skip-buffered-control", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -522,10 +522,10 @@ def main(argv: list[str]) -> int:
         parser.error("--runs must be positive")
     binary = args.binary.resolve()
     if not binary.is_file():
-        parser.error(f"CLI binary not found: {binary}; build with: cargo build --locked --release -p sandflos-cli")
+        parser.error(f"CLI binary not found: {binary}; build with: cargo build --locked --release -p booxctl")
 
     runs = []
-    with tempfile.TemporaryDirectory(prefix="sandflos-upload-benchmark-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="booxctl-upload-benchmark-") as tmp:
         root = Path(tmp)
         payloads = {}
         for mib in SIZES_MIB:
@@ -544,7 +544,7 @@ def main(argv: list[str]) -> int:
         "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "environment": environment(binary),
         "method": {
-            "transport": "sandflos --json push through loopback API/OSS fixture",
+            "transport": "booxctl --json push through loopback API/OSS fixture",
             "sampled_memory": (
                 "child VmHWM from /proc every ~1 ms; fixture excluded; "
                 "a peak in the final sampling interval may be missed"

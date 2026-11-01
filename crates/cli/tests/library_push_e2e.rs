@@ -20,7 +20,7 @@ const DOWNLOADED_BYTES: &[u8] = b"downloaded PDF payload";
 fn assert_selected_file_is_pushed(dir: &TestDir, args: &[&str], bytes: &[u8]) {
     let server = ApiServer::start();
     let output = command_with_api(args, &dir.config_dir(), server.endpoint())
-        .env("SANDFLOS_TOKEN", "fixture-token")
+        .env("BOOXCTL_TOKEN", "fixture-token")
         .output()
         .expect("run library push");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -185,8 +185,8 @@ fn push_with_download(dir: &TestDir, api: &ApiServer) -> Output {
         api.endpoint(),
     );
     command
-        .env("SANDFLOS_TEST_OSS_BASE_URL", api.endpoint())
-        .env("SANDFLOS_TOKEN", "fixture-token")
+        .env("BOOXCTL_TEST_OSS_BASE_URL", api.endpoint())
+        .env("BOOXCTL_TOKEN", "fixture-token")
         .output()
         .expect("run Zotero push")
 }

@@ -28,9 +28,9 @@ fn rejected_credential_is_exit_3_without_leaking_the_server_body() {
         &dir.config_dir(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "expired-token")
+    .env("BOOXCTL_TOKEN", "expired-token")
     .output()
-    .expect("run sandflos");
+    .expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(3), "stdout: {}", stdout(&output));
     let value = assert_single_error_envelope(&output);
@@ -50,9 +50,9 @@ fn server_error_is_exit_4_and_does_not_echo_the_upstream_body() {
         &dir.config_dir(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
-    .expect("run sandflos");
+    .expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(4), "stdout: {}", stdout(&output));
     let value = assert_single_error_envelope(&output);
@@ -70,9 +70,9 @@ fn malformed_upstream_payload_is_a_protocol_error_exit_4() {
         &dir.config_dir(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
-    .expect("run sandflos");
+    .expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(4), "stdout: {}", stdout(&output));
     let value = assert_single_error_envelope(&output);
@@ -89,7 +89,7 @@ fn corrupted_credential_file_is_local_io_not_missing_credentials() {
 
     let output = command(&["--json", "queue", "list"], &config)
         .output()
-        .expect("run sandflos");
+        .expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(5), "stdout: {}", stdout(&output));
     let value = assert_single_error_envelope(&output);
@@ -111,9 +111,9 @@ fn only_the_api_test_endpoint_is_honoured_without_falling_back_to_production() {
         &dir.config_dir(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
-    .expect("run sandflos");
+    .expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(0), "stdout: {}", stdout(&output));
     let value = json_stdout(&output);
@@ -138,9 +138,9 @@ fn a_rejected_credential_during_push_keeps_the_per_file_report() {
         server.endpoint(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "expired-token")
+    .env("BOOXCTL_TOKEN", "expired-token")
     .output()
-    .expect("run sandflos");
+    .expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(3), "stdout: {}", stdout(&output));
     let value = assert_single_error_envelope(&output);
@@ -166,9 +166,9 @@ fn failed_save_and_push_is_exit_6_unknown_with_the_message_id_kept() {
         server.endpoint(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
-    .expect("run sandflos");
+    .expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(6), "stdout: {}", stdout(&output));
     let value = assert_single_error_envelope(&output);
@@ -193,9 +193,9 @@ fn half_completed_queue_delete_is_exit_6_and_reports_the_partial_state() {
         &dir.config_dir(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
-    .expect("run sandflos");
+    .expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(6), "stdout: {}", stdout(&output));
     let value = assert_single_error_envelope(&output);

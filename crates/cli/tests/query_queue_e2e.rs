@@ -155,9 +155,9 @@ fn queue_list_and_delete_use_the_loopback_contract() {
 fn run(args: &[&str], dir: &TestDir, endpoint: &str) -> Output {
     command_with_api(args, &dir.config_dir(), endpoint)
         .env(TEST_OSS_ENDPOINT_ENV, endpoint)
-        .env("SANDFLOS_TOKEN", "fixture-token")
+        .env("BOOXCTL_TOKEN", "fixture-token")
         .output()
-        .expect("run sandflos")
+        .expect("run booxctl")
 }
 
 #[test]
@@ -205,9 +205,9 @@ fn push_uploads_and_reports_accepted_files() {
         server.endpoint(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
-    .expect("run sandflos");
+    .expect("run booxctl");
 
     assert_eq!(
         output.status.code(),

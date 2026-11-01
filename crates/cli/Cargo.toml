@@ -1,12 +1,12 @@
 [package]
-name = "sandflos-cli"
+name = "booxctl"
 version = "0.1.0"
 edition = "2021"
-description = "Command-line interface for sandFlos"
+description = "booxctl: command-line client for sending documents to BOOX devices"
 license = "UNLICENSED"
 
 [[bin]]
-name = "sandflos"
+name = "booxctl"
 path = "src/main.rs"
 
 [dependencies]

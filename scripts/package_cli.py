@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def binary_name() -> str:
-    return "sandflos.exe" if os.name == "nt" else "sandflos"
+    return "booxctl.exe" if os.name == "nt" else "booxctl"
 
 
 def file_digest(path: Path) -> str:
@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
         "--binary",
         type=Path,
         default=REPO_ROOT / "target" / "release" / binary_name(),
-        help="release binary to package (default: target/release/sandflos[.exe])",
+        help="release binary to package (default: target/release/booxctl[.exe])",
     )
     parser.add_argument(
         "--output",

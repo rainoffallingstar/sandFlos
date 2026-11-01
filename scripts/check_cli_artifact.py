@@ -10,20 +10,20 @@ metadata = json.loads(subprocess.check_output(
     ["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"], cwd=root
 ))
 result = subprocess.check_output(
-    ["cargo", "tree", "--locked", "-p", "sandflos-cli", "-e", "normal", "--prefix", "none"],
+    ["cargo", "tree", "--locked", "-p", "booxctl", "-e", "normal", "--prefix", "none"],
     cwd=root, text=True,
 )
 forbidden = {"gpui", "gpui-component", "tauri", "rfd", "tray-icon", "auto-launch"}
 found = {line.split()[0] for line in result.splitlines() if line.split()} & forbidden
 if found:
     raise SystemExit(f"CLI contains desktop dependencies: {sorted(found)}")
-binary = Path(metadata["target_directory"]) / "release" / ("sandflos.exe" if os.name == "nt" else "sandflos")
-with tempfile.TemporaryDirectory(prefix="sandflos-smoke-") as temp:
+binary = Path(metadata["target_directory"]) / "release" / ("booxctl.exe" if os.name == "nt" else "booxctl")
+with tempfile.TemporaryDirectory(prefix="booxctl-smoke-") as temp:
     env = dict(os.environ)
-    for key in ("DISPLAY", "WAYLAND_DISPLAY", "SANDFLOS_TOKEN", "SANDFLOS_TEST_AUTH_BASE_URL"):
+    for key in ("DISPLAY", "WAYLAND_DISPLAY", "BOOXCTL_TOKEN", "BOOXCTL_TEST_AUTH_BASE_URL"):
         env.pop(key, None)
     config = Path(temp) / "config"
-    env["SANDFLOS_CONFIG_DIR"] = str(config)
+    env["BOOXCTL_CONFIG_DIR"] = str(config)
     for option in ("--help", "--version"):
         subprocess.run([str(binary), option], env=env, check=True, timeout=10,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)

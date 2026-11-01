@@ -3,7 +3,7 @@ use std::fs;
 
 #[test]
 fn concurrent_writer_cannot_replace_or_clear_credentials() {
-    let dir = std::env::temp_dir().join(format!("sandflos-lock-{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!("booxctl-lock-{}", uuid::Uuid::new_v4()));
     let store = FileCredentialStore::new(&AppPaths::new(&dir));
     store.save("old-credential").unwrap();
     let lock = fs::OpenOptions::new()

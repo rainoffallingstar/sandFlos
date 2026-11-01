@@ -9,7 +9,7 @@ import unittest
 import zipfile
 
 SCRIPTS = Path(__file__).resolve().parent
-BINARY = 'sandflos.exe' if os.name == 'nt' else 'sandflos'
+BINARY = 'booxctl.exe' if os.name == 'nt' else 'booxctl'
 
 
 def run(script, *args):
@@ -33,7 +33,7 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / BINARY
-            binary.write_text('#!/bin/sh\ncase "$1" in\n--help) echo "Usage: sandflos";;\n--version) echo "sandflos test";;\nesac\n')
+            binary.write_text('#!/bin/sh\ncase "$1" in\n--help) echo "Usage: booxctl";;\n--version) echo "booxctl test";;\nesac\n')
             binary.chmod(0o755)
             readme = root / 'readme'
             readme.write_text('# CLI\n')
@@ -41,12 +41,12 @@ class ReleaseTests(unittest.TestCase):
             result = run('package_cli.py', '--binary', binary, '--readme', readme,
                          '--output', package)
             self.assertEqual(result.returncode, 0, result.stderr)
-            args = ('archive', '--tag', 'cli-v0.1.0', '--target',
+            args = ('archive', '--tag', 'booxctl-v0.1.0', '--target',
                     'x86_64-unknown-linux-gnu', '--package', package,
                     '--output-dir', root / 'release')
             result = run('release_cli.py', *args)
             self.assertEqual(result.returncode, 0, result.stderr)
-            archive = root / 'release/sandflos-cli-v0.1.0-x86_64-unknown-linux-gnu.zip'
+            archive = root / 'release/booxctl-v0.1.0-x86_64-unknown-linux-gnu.zip'
             with zipfile.ZipFile(archive) as bundle:
                 self.assertEqual(set(bundle.namelist()), {BINARY, 'README.md', 'SHA256SUMS'})
             result = run('verify_cli_package.py', archive)

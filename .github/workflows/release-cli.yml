@@ -1,7 +1,7 @@
 name: CLI release
 on:
   push:
-    tags: ['cli-v*']
+    tags: ['booxctl-v*']
   workflow_dispatch:
     inputs:
       tag:
@@ -51,11 +51,11 @@ jobs:
           done
       - uses: actions/upload-artifact@v4
         with:
-          name: sandflos-cli-release-${{ matrix.os }}
+          name: booxctl-release-${{ matrix.os }}
           path: release-assets/*
           if-no-files-found: error
   draft-release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/cli-v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/booxctl-v')
     needs: package
     runs-on: ubuntu-latest
     permissions:
@@ -64,7 +64,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: sandflos-cli-release-*
+          pattern: booxctl-release-*
           merge-multiple: true
           path: release-assets
       - name: Create a draft with the three verified native packages
@@ -76,4 +76,4 @@ jobs:
         run: |
           test "$(find release-assets -name '*.zip' -type f | wc -l)" -eq 3
           gh release create "$CLI_TAG" release-assets/* --verify-tag --draft \
-            --title "sandflos $CLI_TAG" --generate-notes --latest=false
+            --title "booxctl $CLI_TAG" --generate-notes --latest=false

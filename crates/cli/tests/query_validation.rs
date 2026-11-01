@@ -11,7 +11,7 @@ fn invalid_reading_dates_are_usage_errors_before_credentials() {
             &dir.config_dir(),
         )
         .output()
-        .expect("run sandflos");
+        .expect("run booxctl");
         assert_eq!(output.status.code(), Some(2), "date={date}: {output:?}");
         assert_eq!(json_stdout(&output)["error"]["code"], "invalid_date");
         assert!(!dir.config_dir().exists());
@@ -29,7 +29,7 @@ fn invalid_auth_origins_are_rejected_without_configuration_changes() {
         let output = command(&["--json", "auth", "status"], &dir.config_dir())
             .env(common::TEST_AUTH_ENDPOINT_ENV, endpoint)
             .output()
-            .expect("run sandflos");
+            .expect("run booxctl");
         assert_eq!(output.status.code(), Some(2), "{output:?}");
         assert!(!dir.config_dir().exists());
     }
@@ -49,14 +49,14 @@ fn invalid_api_or_orphaned_oss_endpoints_never_fall_back_to_production() {
             (None, Some("http://127.0.0.1:1")),
         ] {
             let mut child = command(&args, &dir.config_dir());
-            child.env("SANDFLOS_TOKEN", "fixture-token");
+            child.env("BOOXCTL_TOKEN", "fixture-token");
             if let Some(api) = api {
                 child.env(common::TEST_API_ENDPOINT_ENV, api);
             }
             if let Some(oss) = oss {
                 child.env(common::TEST_OSS_ENDPOINT_ENV, oss);
             }
-            let output = child.output().expect("run sandflos");
+            let output = child.output().expect("run booxctl");
             assert_eq!(output.status.code(), Some(2), "{output:?}");
             assert_eq!(
                 json_stdout(&output)["error"]["code"],
@@ -84,9 +84,9 @@ fn non_unicode_test_endpoints_are_usage_errors() {
     ] {
         let output = command(&args, &dir.config_dir())
             .env(name, OsString::from_vec(vec![0xff]))
-            .env("SANDFLOS_TOKEN", "fixture-token")
+            .env("BOOXCTL_TOKEN", "fixture-token")
             .output()
-            .expect("run sandflos");
+            .expect("run booxctl");
         assert_eq!(output.status.code(), Some(2), "{output:?}");
     }
 }

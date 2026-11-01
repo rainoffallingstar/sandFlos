@@ -15,9 +15,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub const TEST_AUTH_ENDPOINT_ENV: &str = "SANDFLOS_TEST_AUTH_BASE_URL";
-pub const TEST_API_ENDPOINT_ENV: &str = "SANDFLOS_TEST_API_BASE_URL";
-pub const TEST_OSS_ENDPOINT_ENV: &str = "SANDFLOS_TEST_OSS_BASE_URL";
+pub const TEST_AUTH_ENDPOINT_ENV: &str = "BOOXCTL_TEST_AUTH_BASE_URL";
+pub const TEST_API_ENDPOINT_ENV: &str = "BOOXCTL_TEST_API_BASE_URL";
+pub const TEST_OSS_ENDPOINT_ENV: &str = "BOOXCTL_TEST_OSS_BASE_URL";
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -30,8 +30,7 @@ impl TestDir {
             .expect("system time")
             .as_nanos();
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path =
-            env::temp_dir().join(format!("sandflos-cli-{}-{nonce}-{id}", std::process::id()));
+        let path = env::temp_dir().join(format!("booxctl-{}-{nonce}-{id}", std::process::id()));
         fs::create_dir_all(&path).expect("create test directory");
         Self(path)
     }
@@ -52,12 +51,12 @@ impl Drop for TestDir {
 }
 
 pub fn command(args: &[&str], config_dir: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sandflos"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_booxctl"));
     command
         .args(args)
-        .env("SANDFLOS_CONFIG_DIR", config_dir)
-        .env("SANDFLOS_CREDENTIAL_STORE", "file")
-        .env_remove("SANDFLOS_TOKEN")
+        .env("BOOXCTL_CONFIG_DIR", config_dir)
+        .env("BOOXCTL_CREDENTIAL_STORE", "file")
+        .env_remove("BOOXCTL_TOKEN")
         .env_remove(TEST_AUTH_ENDPOINT_ENV)
         .env_remove(TEST_API_ENDPOINT_ENV)
         .env_remove(TEST_OSS_ENDPOINT_ENV)
@@ -89,13 +88,13 @@ pub fn command_with_api_and_oss(
 }
 
 pub fn run(args: &[&str], config_dir: &Path) -> Output {
-    command(args, config_dir).output().expect("run sandflos")
+    command(args, config_dir).output().expect("run booxctl")
 }
 
 pub fn run_with_api(args: &[&str], config_dir: &Path, endpoint: &str) -> Output {
     command_with_api(args, config_dir, endpoint)
         .output()
-        .expect("run sandflos")
+        .expect("run booxctl")
 }
 
 pub fn run_with_stdin(args: &[&str], config_dir: &Path, input: &str) -> Output {
@@ -117,14 +116,14 @@ fn run_with_stdin_from(mut command: Command, input: &str) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn sandflos");
+        .expect("spawn booxctl");
     child
         .stdin
         .take()
         .expect("stdin")
         .write_all(input.as_bytes())
         .expect("write stdin");
-    child.wait_with_output().expect("wait for sandflos")
+    child.wait_with_output().expect("wait for booxctl")
 }
 
 pub fn stdout(output: &Output) -> String {

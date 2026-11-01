@@ -47,7 +47,7 @@ pub fn emit_error(json: bool, error: &CliError) {
             serde_json::to_string(&error_envelope(error)).expect("serialize error envelope")
         );
     } else {
-        eprintln!("sandflos: {}", error.message);
+        eprintln!("booxctl: {}", error.message);
         if error.code == crate::error::CliErrorCode::Usage {
             eprintln!();
             eprint!("{}", crate::help::USAGE);

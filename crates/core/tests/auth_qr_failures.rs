@@ -33,7 +33,7 @@ impl Fixture {
         poll_body: Option<&'static str>,
         delay: Duration,
     ) -> Self {
-        let root = std::env::temp_dir().join(format!("sandflos-qr-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("booxctl-qr-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();

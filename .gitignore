@@ -27,7 +27,7 @@ node_modules/
 __pycache__/
 
 # Misc
-sandflos-artifact.zip
+booxctl-artifact.zip
 *.tmp
 *.temp
 

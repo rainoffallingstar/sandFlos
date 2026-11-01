@@ -295,7 +295,7 @@ pub fn configure_webdav(
     username: &str,
     password: &str,
 ) -> Result<(), LibraryError> {
-    let kind = std::env::var("SANDFLOS_CREDENTIAL_STORE")
+    let kind = std::env::var("BOOXCTL_CREDENTIAL_STORE")
         .ok()
         .map(|v| crate::auth_service::CredentialStoreKind::parse(&v))
         .transpose()
@@ -452,7 +452,7 @@ fn download_attachment(
     }
     let index = selected.ok_or("ZIP does not contain the requested attachment")?;
     let directory =
-        std::env::temp_dir().join(format!("sandflos-attachment-{}", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("booxctl-attachment-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&directory).map_err(|_| "cannot create temporary directory")?;
     let mut resolved = ResolvedAttachment {
         path: directory.join("attachment"),

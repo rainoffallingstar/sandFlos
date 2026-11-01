@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify a downloaded sandflos CLI package and run its binary without a display."""
+"""Verify a downloaded booxctl CLI package and run its binary without a display."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ README = "README.md"
 
 
 def binary_name() -> str:
-    return "sandflos.exe" if os.name == "nt" else "sandflos"
+    return "booxctl.exe" if os.name == "nt" else "booxctl"
 
 
 def file_digest(path: Path) -> str:
@@ -123,21 +123,21 @@ def verify(root: Path) -> Path:
     if os.name != "nt" and not (binary.stat().st_mode & 0o111):
         raise SystemExit(f"packaged binary is not executable: {binary}")
 
-    with tempfile.TemporaryDirectory(prefix="sandflos-run-") as run_dir:
+    with tempfile.TemporaryDirectory(prefix="booxctl-run-") as run_dir:
         env = dict(os.environ)
         for key in (
             "DISPLAY",
             "WAYLAND_DISPLAY",
-            "SANDFLOS_TOKEN",
-            "SANDFLOS_TEST_AUTH_BASE_URL",
+            "BOOXCTL_TOKEN",
+            "BOOXCTL_TEST_AUTH_BASE_URL",
         ):
             env.pop(key, None)
         for key in list(env):
-            if key.startswith("SANDFLOS_TEST_"):
+            if key.startswith("BOOXCTL_TEST_"):
                 env.pop(key)
         config = Path(run_dir) / "config"
-        env["SANDFLOS_CONFIG_DIR"] = str(config)
-        for option, needle in (("--help", "usage:"), ("--version", "sandflos")):
+        env["BOOXCTL_CONFIG_DIR"] = str(config)
+        for option, needle in (("--help", "usage:"), ("--version", "booxctl")):
             try:
                 result = subprocess.run(
                     [str(binary), option],
@@ -168,7 +168,7 @@ def verify(root: Path) -> Path:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify a downloaded sandflos CLI package or artifact ZIP."
+        description="Verify a downloaded booxctl CLI package or artifact ZIP."
     )
     parser.add_argument(
         "package",
@@ -181,7 +181,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     source = args.package
-    with tempfile.TemporaryDirectory(prefix="sandflos-package-") as temp:
+    with tempfile.TemporaryDirectory(prefix="booxctl-package-") as temp:
         if source.is_dir():
             root = source
         elif source.is_file() and zipfile.is_zipfile(source):

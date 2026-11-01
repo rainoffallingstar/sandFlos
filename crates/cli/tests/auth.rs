@@ -133,8 +133,8 @@ fn logout_is_idempotent() {
 fn environment_token_takes_precedence_and_blocks_import() {
     let dir = TestDir::new();
     let mut status = command(&["--json", "auth", "status"], &dir.config_dir());
-    status.env("SANDFLOS_TOKEN", "environment-token");
-    let output = status.output().expect("run sandflos");
+    status.env("BOOXCTL_TOKEN", "environment-token");
+    let output = status.output().expect("run booxctl");
     assert_eq!(output.status.code(), Some(0), "stderr: {}", stderr(&output));
     let value = json_stdout(&output);
     assert_eq!(value["data"]["authorized"], true);
@@ -145,7 +145,7 @@ fn environment_token_takes_precedence_and_blocks_import() {
         &dir.config_dir(),
     );
     import
-        .env("SANDFLOS_TOKEN", "environment-token")
+        .env("BOOXCTL_TOKEN", "environment-token")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -281,7 +281,7 @@ fn non_loopback_test_auth_endpoint_is_rejected() {
     let dir = TestDir::new();
     let mut command = command(&["--json", "auth", "status"], &dir.config_dir());
     command.env(TEST_AUTH_ENDPOINT_ENV, "https://example.com");
-    let output = command.output().expect("run sandflos");
+    let output = command.output().expect("run booxctl");
 
     assert_eq!(output.status.code(), Some(2), "stderr: {}", stderr(&output));
     assert_eq!(stderr(&output), "");

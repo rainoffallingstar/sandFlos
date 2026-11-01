@@ -6,11 +6,7 @@ use std::{fs, path::PathBuf};
 pub fn run(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     let source = match args {
         [cmd, flag, path] if cmd == "migrate" && flag == "--from" => PathBuf::from(path),
-        _ => {
-            return Err(CliError::usage(
-                "usage: sandflos config migrate --from PATH",
-            ))
-        }
+        _ => return Err(CliError::usage("usage: booxctl config migrate --from PATH")),
     };
     let source = if source.is_dir() {
         source.join("auth_cache.json")

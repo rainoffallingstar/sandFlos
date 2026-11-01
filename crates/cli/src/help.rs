@@ -1,5 +1,5 @@
 pub const USAGE: &str = "\
-Usage: sandflos [OPTIONS] <COMMAND>
+Usage: booxctl [OPTIONS] <COMMAND>
 
 Commands:
   auth         Manage authentication and token storage
@@ -24,9 +24,9 @@ Options:
 ";
 
 pub const HELP: &str = "\
-sandFlos sends documents to BOOX devices from the command line.
+booxctl sends documents to BOOX devices from the command line.
 
-Usage: sandflos [OPTIONS] <COMMAND>
+Usage: booxctl [OPTIONS] <COMMAND>
 
 Commands:
   auth         Manage authentication and token storage

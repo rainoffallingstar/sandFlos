@@ -2059,7 +2059,7 @@ mod tests {
     }
 
     fn temp_file(bytes: &[u8]) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("sandflos-services-{}.pdf", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("booxctl-services-{}.pdf", Uuid::new_v4()));
         fs::write(&path, bytes).unwrap();
         path
     }
@@ -2184,7 +2184,7 @@ mod tests {
 
     #[test]
     fn missing_files_fail_before_authentication() {
-        let missing = std::env::temp_dir().join(format!("sandflos-missing-{}.pdf", Uuid::new_v4()));
+        let missing = std::env::temp_dir().join(format!("booxctl-missing-{}.pdf", Uuid::new_v4()));
         let mut service = PushService::new(FakePush {
             auth_ok: false,
             ..FakePush::ok()
@@ -2204,7 +2204,7 @@ mod tests {
 
     #[test]
     fn local_failures_keep_their_input_position_when_auth_fails() {
-        let missing = std::env::temp_dir().join(format!("sandflos-missing-{}.pdf", Uuid::new_v4()));
+        let missing = std::env::temp_dir().join(format!("booxctl-missing-{}.pdf", Uuid::new_v4()));
         let valid = temp_file(b"valid");
         let mut service = PushService::new(FakePush {
             auth_ok: false,
@@ -2227,7 +2227,7 @@ mod tests {
 
     #[test]
     fn oversized_file_is_rejected_before_authentication() {
-        let path = std::env::temp_dir().join(format!("sandflos-large-{}.pdf", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("booxctl-large-{}.pdf", Uuid::new_v4()));
         let file = fs::File::create(&path).unwrap();
         file.set_len(MAX_SINGLE_UPLOAD_BYTES + 1).unwrap();
         drop(file);

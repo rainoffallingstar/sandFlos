@@ -22,7 +22,7 @@ See `docs/plans/tdd-cli-only.md` for the cleanup record and evidence, and
 
 ## Working rules
 
-- Scope is `crates/core` + `crates/cli` and the `sandflos` binary/packages.
+- Scope is `crates/core` + `crates/cli` and the `booxctl` binary/packages.
 - Use actual behavioral Red/Green. Compilation, setup, fixture, or missing-API
   failures are not Red. Never fabricate a Red by rolling back working code.
 - Keep HTTP fixtures and child waits bounded: absolute read deadlines, bounded
@@ -52,7 +52,7 @@ The desktop refresh *app wiring* is out of scope now; the core
 - `desktop-compatibility` CI job removed; CLI jobs unchanged.
 - README and `docs/cli.md` describe CLI only.
 - Unified check before the deletion: 267 Rust + 7 Python, exit 0
-  (`/tmp/sandflos-cli-only-flakefix-check.log`).
+  (`/tmp/booxctl-only-flakefix-check.log`).
 - Outstanding: real-platform acceptance (credentials, QR, BOOX/OSS/WebDAV,
   device receipt, tag→draft release).
 

@@ -11,7 +11,7 @@ import warnings
 import zipfile
 
 SCRIPTS = Path(__file__).resolve().parent
-BINARY = 'sandflos.exe' if os.name == 'nt' else 'sandflos'
+BINARY = 'booxctl.exe' if os.name == 'nt' else 'booxctl'
 
 
 def run(script, *args, cwd=None):
@@ -101,7 +101,7 @@ class PackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / BINARY
-            binary.write_text('#!/bin/sh\ncase "$1" in\n--help) echo "Usage: sandflos";;\n--version) echo "sandflos test";;\nesac\n')
+            binary.write_text('#!/bin/sh\ncase "$1" in\n--help) echo "Usage: booxctl";;\n--version) echo "booxctl test";;\nesac\n')
             binary.chmod(0o755)
             readme = root / 'readme'
             readme.write_text('# CLI\n')

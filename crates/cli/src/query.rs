@@ -22,7 +22,7 @@ fn devices(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     match subcommand {
         "list" if args.len() == 1 => devices_list(options),
         "transfer-url" => transfer_url(options, &args[1..]),
-        "list" => Err(CliError::usage("usage: sandflos devices list")),
+        "list" => Err(CliError::usage("usage: booxctl devices list")),
         other => Err(CliError::usage(format!(
             "unknown devices subcommand: {other}; expected list or transfer-url"
         ))),
@@ -52,7 +52,7 @@ fn devices_list(options: &GlobalOptions) -> Result<(), CliError> {
 fn transfer_url(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     let id = match args {
         [id] if !id.starts_with('-') => id.as_str(),
-        _ => return Err(CliError::usage("usage: sandflos devices transfer-url ID")),
+        _ => return Err(CliError::usage("usage: booxctl devices transfer-url ID")),
     };
     let devices = query_service(options)?.devices()?;
     let device = devices
@@ -79,7 +79,7 @@ fn transfer_url(options: &GlobalOptions, args: &[String]) -> Result<(), CliError
 
 fn storage(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if args != ["status"] {
-        return Err(CliError::usage("usage: sandflos storage status"));
+        return Err(CliError::usage("usage: booxctl storage status"));
     }
     let reading = query_service(options)?.storage()?;
     if options.json {
@@ -101,7 +101,7 @@ fn storage(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 fn reading(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if args.first().map(String::as_str) != Some("stats") {
         return Err(CliError::usage(
-            "usage: sandflos reading stats --date YYYY-MM-DD",
+            "usage: booxctl reading stats --date YYYY-MM-DD",
         ));
     }
     let mut date = None;

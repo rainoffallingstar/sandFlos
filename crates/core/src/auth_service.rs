@@ -367,7 +367,7 @@ impl AppPaths {
     }
 
     pub fn from_process_env(explicit_dir: Option<PathBuf>) -> Result<Self, AuthError> {
-        let environment_dir = std::env::var_os("SANDFLOS_CONFIG_DIR")
+        let environment_dir = std::env::var_os("BOOXCTL_CONFIG_DIR")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
         Self::resolve(explicit_dir, environment_dir)
@@ -383,7 +383,7 @@ impl AppPaths {
 }
 
 pub fn default_config_dir() -> Option<PathBuf> {
-    dirs::data_dir().map(|base| base.join("sandflos-cli"))
+    dirs::data_dir().map(|base| base.join("booxctl"))
 }
 
 fn validate_token(raw: &str) -> Result<String, AuthError> {
@@ -550,7 +550,7 @@ fn credential_lock(dir: &Path) -> Result<File, AuthError> {
     Ok(file)
 }
 
-const KEYRING_SERVICE: &str = "com.fallingstar.sandflos.cli";
+const KEYRING_SERVICE: &str = "com.fallingstar.booxctl";
 
 pub struct KeyringCredentialStore {
     #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
@@ -653,7 +653,7 @@ impl CredentialStore for KeyringCredentialStore {
             Err(AuthError::new(
                 AuthErrorKind::Unsupported,
                 "credential_store_unavailable",
-                "当前平台没有可用且持久的系统凭据存储；请设置 SANDFLOS_TOKEN 或显式选择 SANDFLOS_CREDENTIAL_STORE=file",
+                "当前平台没有可用且持久的系统凭据存储；请设置 BOOXCTL_TOKEN 或显式选择 BOOXCTL_CREDENTIAL_STORE=file",
             ))
         }
     }
@@ -697,7 +697,7 @@ impl CredentialStore for UnavailableCredentialStore {
         Err(AuthError::new(
             AuthErrorKind::Unsupported,
             "credential_store_unavailable",
-            "当前平台没有可用且持久的系统凭据存储；请设置 SANDFLOS_TOKEN 或显式选择 SANDFLOS_CREDENTIAL_STORE=file",
+            "当前平台没有可用且持久的系统凭据存储；请设置 BOOXCTL_TOKEN 或显式选择 BOOXCTL_CREDENTIAL_STORE=file",
         ))
     }
 
@@ -809,7 +809,7 @@ impl AuthService {
             return Err(AuthError::new(
                 AuthErrorKind::Unsupported,
                 "credential_store_unavailable",
-                "当前平台没有可用且持久的凭证存储；请设置 SANDFLOS_TOKEN 或显式选择 file 存储",
+                "当前平台没有可用且持久的凭证存储；请设置 BOOXCTL_TOKEN 或显式选择 file 存储",
             ));
         }
         self.client.verify_token(&token)?;
@@ -844,7 +844,7 @@ impl AuthService {
             return Err(AuthError::new(
                 AuthErrorKind::Unsupported,
                 "credential_store_unavailable",
-                "当前平台没有可用且持久的凭证存储；请设置 SANDFLOS_TOKEN 或显式选择 SANDFLOS_CREDENTIAL_STORE=file",
+                "当前平台没有可用且持久的凭证存储；请设置 BOOXCTL_TOKEN 或显式选择 BOOXCTL_CREDENTIAL_STORE=file",
             ));
         }
         let challenge = self.client.create_qr_login()?;
@@ -888,7 +888,7 @@ impl AuthService {
         if self.environment_token.is_some() {
             return Err(AuthError::input(
                 "environment_token_active",
-                "SANDFLOS_TOKEN 已生效，新凭据不会覆盖或落盘；请清除该环境变量后重试",
+                "BOOXCTL_TOKEN 已生效，新凭据不会覆盖或落盘；请清除该环境变量后重试",
             ));
         }
         Ok(())
@@ -933,10 +933,10 @@ fn set_private_dir_permissions(path: &Path) -> Result<(), AuthError> {
     #[cfg(windows)]
     {
         // Pass the path as data, never interpolate it into PowerShell code.
-        let script = r#"$ErrorActionPreference='Stop'; $p=$env:SANDFLOS_PRIVATE_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p -AclObject $acl"#;
+        let script = r#"$ErrorActionPreference='Stop'; $p=$env:BOOXCTL_PRIVATE_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p -AclObject $acl"#;
         let status = std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("SANDFLOS_PRIVATE_DIRECTORY", path)
+            .env("BOOXCTL_PRIVATE_DIRECTORY", path)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -971,7 +971,7 @@ mod tests {
     impl TempDir {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "sandflos-auth-service-{}-{}",
+                "booxctl-auth-service-{}-{}",
                 std::process::id(),
                 uuid::Uuid::new_v4()
             ));

@@ -63,18 +63,18 @@ jobs:
           done
       - uses: actions/upload-artifact@v4
         with:
-          name: sandflos-${{ matrix.os }}
+          name: booxctl-${{ matrix.os }}
           path: cli-package/
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: sandflos-release-archive-${{ matrix.os }}
+          name: booxctl-release-archive-${{ matrix.os }}
           path: release-assets/*
           if-no-files-found: error
   verify-package:
     needs: cli
     env:
-      PACKAGE_ZIP: sandflos-artifact.zip
+      PACKAGE_ZIP: booxctl-artifact.zip
     strategy:
       fail-fast: false
       matrix:
@@ -89,7 +89,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: sandflos-${{ matrix.os }}
+          ARTIFACT_NAME: booxctl-${{ matrix.os }}
         run: |
           artifact_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
             --jq ".artifacts[] | select(.name == \"${ARTIFACT_NAME}\") | .id")"

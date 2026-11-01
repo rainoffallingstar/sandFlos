@@ -431,7 +431,7 @@ pub fn fetch_auth_context_and_user_with_endpoints(
 
 /// Resolve the account and storage context for an already authenticated credential.
 ///
-/// CLI adapters use this entry point so `auth import` and `SANDFLOS_TOKEN` are
+/// CLI adapters use this entry point so `auth import` and `BOOXCTL_TOKEN` are
 /// honoured without consulting the desktop process's global auth cache.
 pub fn fetch_auth_context_for_token(
     client: &Client,

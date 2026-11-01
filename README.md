@@ -1,37 +1,62 @@
-# sandFlos CLI
+# booxctl
 
-**sandFlos** 的命令行工具：把本地书和文档推送到 BOOX 墨水屏设备，覆盖登录授权、云空间、设备、阅读指标、互动文件队列，以及 Zotero / Calibre 本地书库。
+**booxctl** 是 BOOX 的命令行控制器：推送本地书和文档到墨水屏设备，并覆盖登录授权、云空间、设备发现、阅读指标、互动文件队列，以及 Zotero / Calibre 本地书库。
 
 仓库只维护 CLI，不含桌面端代码，也不需要窗口、浏览器、托盘或显示服务。
 
 ## 安装与运行
 
 ```bash
-cargo build --locked --release -p sandflos-cli
-./target/release/sandflos --help
+cargo build --locked --release -p booxctl
+./target/release/booxctl --help
 ```
 
-Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。GitHub Actions 为 Linux / macOS / Windows 构建独立二进制与带校验和的发布包。
+Windows 二进制名为 `booxctl.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。GitHub Actions 为 Linux / macOS / Windows 构建独立二进制与带校验和的发布包。
 
 ## 快速开始
 
 ```bash
 # 登录：默认浏览器打开本地回环登录页，token 回流后保存在系统凭据存储
-sandflos auth login
+booxctl auth login
 
 # 查看授权与本地凭据状态（加 --verify 才会访问网络）
-sandflos --json auth status
+booxctl --json auth status
 
 # 上传并推送到设备
-sandflos push ./book.epub
+booxctl push ./book.epub
 
 # 只读查询
-sandflos --json devices
-sandflos --json storage
-sandflos --json reading
+booxctl --json devices
+booxctl --json storage
+booxctl --json reading
 ```
 
-配置、认证、推送、书库命令和退出码见 [CLI 使用说明](docs/cli.md)。
+## 配置
+
+```bash
+export BOOXCTL_CONFIG_DIR="$HOME/.config/booxctl"   # 可选，默认 dirs::data_dir()/booxctl
+export BOOXCTL_CREDENTIAL_STORE=file                # Linux 必须；macOS/Windows 默认系统钥匙串
+export BOOXCTL_TOKEN=...                            # 可选，进程级，永不落盘
+```
+
+Linux 没有可用的系统钥匙串时会明确报错，不会静默降级为明文文件；需要持久化时显式选择 `file`（`auth.json`，0600 权限）。
+
+## 子命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `auth` | `login --qr` / `import --token-stdin` / `status [--verify]` / `logout` |
+| `push` | 上传并推送一个或多个文件 |
+| `queue` | `list` / `resend` / `delete --yes` |
+| `devices` | `list` / `transfer-url ID` |
+| `storage` | `status` |
+| `reading` | `stats --date YYYY-MM-DD` |
+| `calibre` | `configure` / `status` / `list` / `push` |
+| `zotero` | `configure` / `detect` / `status` / `list` / `webdav configure` / `push` |
+| `diagnostics` | 离线、脱敏的环境报告 |
+| `config` | `migrate --from PATH`（从旧 `auth_cache.json` 显式迁移） |
+
+真实场景配置步骤、凭据后端细节和退出码见 [CLI 使用说明](docs/cli.md)。
 
 ## 能力
 
@@ -60,7 +85,7 @@ bash scripts/check_cli.sh
 ## 架构
 
 ```
-sandFlos
+booxctl
 ├── crates/core/          # 纯 Rust 领域逻辑（无 UI 依赖）
 │   ├── api.rs            # Send2Boox API / OSS / STS / neocloud
 │   ├── auth*.rs          # 回环登录、凭据存储与会话
@@ -70,7 +95,7 @@ sandFlos
 │   ├── zotero.rs         # Zotero SQLite + WebDAV
 │   ├── calibre.rs        # Calibre metadata.db
 │   └── dashboard.rs      # 仪表盘快照聚合
-└── crates/cli/           # sandflos 命令行入口
+└── crates/cli/           # booxctl 命令行入口
 ```
 
 工作区只有这两个 crate；桌面端实现不在本仓库当前分支中。

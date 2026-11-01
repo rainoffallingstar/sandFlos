@@ -284,20 +284,20 @@ impl ChildGuard {
             match self.child.as_mut().expect("running child").try_wait() {
                 Ok(Some(_)) => {
                     let child = self.child.take().expect("running child");
-                    return child.wait_with_output().expect("reap sandflos");
+                    return child.wait_with_output().expect("reap booxctl");
                 }
                 Ok(None) if Instant::now() >= deadline => {
                     let mut child = self.child.take().expect("running child");
                     let _ = child.kill();
-                    let output = child.wait_with_output().expect("reap killed sandflos");
+                    let output = child.wait_with_output().expect("reap killed booxctl");
                     panic!(
-                        "sandflos did not exit within {timeout:?}; stdout: {} stderr: {}",
+                        "booxctl did not exit within {timeout:?}; stdout: {} stderr: {}",
                         stdout(&output),
                         stderr(&output)
                     );
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-                Err(error) => panic!("cannot poll sandflos: {error}"),
+                Err(error) => panic!("cannot poll booxctl: {error}"),
             }
         }
     }
@@ -313,7 +313,7 @@ impl Drop for ChildGuard {
 }
 
 fn spawn_push(dir: &TestDir, endpoint: &str, file: &Path) -> (ChildGuard, Receiver<String>) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sandflos"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_booxctl"));
     command
         .args([
             "push",
@@ -321,15 +321,15 @@ fn spawn_push(dir: &TestDir, endpoint: &str, file: &Path) -> (ChildGuard, Receiv
             "--timeout",
             "300",
         ])
-        .env("SANDFLOS_CONFIG_DIR", dir.config_dir())
-        .env("SANDFLOS_CREDENTIAL_STORE", "file")
-        .env("SANDFLOS_TOKEN", "fixture-token")
+        .env("BOOXCTL_CONFIG_DIR", dir.config_dir())
+        .env("BOOXCTL_CREDENTIAL_STORE", "file")
+        .env("BOOXCTL_TOKEN", "fixture-token")
         .env(TEST_API_ENDPOINT_ENV, endpoint)
         .env(TEST_OSS_ENDPOINT_ENV, endpoint)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().expect("spawn sandflos");
+    let mut child = command.spawn().expect("spawn booxctl");
     let stderr_pipe = child.stderr.take().expect("child stderr");
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
@@ -389,7 +389,7 @@ fn slow_oss_response_reports_read_bytes_before_acknowledgment() {
                 "the final read count was not reported while the OSS response was withheld; stderr so far: {observed:?}"
             ),
             Err(RecvTimeoutError::Disconnected) => {
-                panic!("sandflos stopped before reporting the final read count: {observed:?}")
+                panic!("booxctl stopped before reporting the final read count: {observed:?}")
             }
         }
     }

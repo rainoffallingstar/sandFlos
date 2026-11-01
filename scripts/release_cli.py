@@ -26,7 +26,7 @@ def main() -> int:
     args = parser.parse_args()
     manifest = tomllib.loads((REPO_ROOT / 'crates/cli/Cargo.toml').read_text(encoding='utf-8'))
     version = manifest['package']['version']
-    if args.tag != f'cli-v{version}':
+    if args.tag != f'booxctl-v{version}':
         parser.error(f'tag {args.tag!r} does not match CLI version {version!r}')
     if args.command == 'archive':
         targets = {'x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu',
@@ -38,11 +38,11 @@ def main() -> int:
         subprocess.run([sys.executable, str(REPO_ROOT / 'scripts/verify_cli_package.py'),
                         str(args.package)], check=True)
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        destination = args.output_dir / f'sandflos-{args.tag}-{args.target}.zip'
+        destination = args.output_dir / f'{args.tag}-{args.target}.zip'
         sums = destination.with_suffix('.zip.sha256')
         if destination.exists() or sums.exists():
             parser.error('refusing to replace an existing release archive or checksum')
-        binary = 'sandflos.exe' if 'windows' in args.target else 'sandflos'
+        binary = 'booxctl.exe' if 'windows' in args.target else 'booxctl'
         created = []
         try:
             with zipfile.ZipFile(destination, 'x', compression=zipfile.ZIP_DEFLATED) as bundle:

@@ -1,13 +1,13 @@
-# sandFlos CLI
+# booxctl
 
 本仓库只维护命令行工具，不包含桌面端代码，也不需要窗口、浏览器、托盘或显示服务。源码构建：
 
 ```bash
-cargo build --locked --release -p sandflos-cli
-./target/release/sandflos --help
+cargo build --locked --release -p booxctl
+./target/release/booxctl --help
 ```
 
-Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。工作区成员只有 `boox-core` 与 `sandflos-cli`，构建、测试和发布都针对 CLI（`-p boox-core -p sandflos-cli`）。
+Windows 二进制名为 `booxctl.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。工作区成员只有 `boox-core` 与 `booxctl`，构建、测试和发布都针对 CLI（`-p boox-core -p booxctl`）。
 
 ## 自动化契约
 
@@ -19,7 +19,7 @@ Windows 二进制名为 `sandflos.exe`。仓库通过 `rust-toolchain.toml` 固�
 
 SIGINT 可中断 push 中正在等待的认证、配额、bucket、STS、签名链接校验、OSS 上传、消息写入、同步确认和最终提交；退出 130 并停止后续文件。已收到的消息 ID 和已确认成功仍保留，可能已经写入但未收到确认的结果为 unknown，不自动重试。devices、storage、reading 查询也可取消，停止后续查询请求并返回 `cancelled`。queue list/resend/delete也支持取消：写入前取消返回130，可能写入但未确认则保留unknown/部分结果并返回6，已确认成功保留。登录上游的其他阻塞请求仍可能等待当前请求超时；`--timeout` 仍是单次请求超时。
 
-`--config-dir` / `SANDFLOS_CONFIG_DIR` 选择独立配置目录。`SANDFLOS_TOKEN` 为进程级输入，不自动保存；不要把真实 token 放在命令行参数中。默认使用 macOS Keychain / Windows Credential Manager；Linux 等没有持久后端的环境会明确报错，此时使用 `SANDFLOS_TOKEN`，或显式设置 `SANDFLOS_CREDENTIAL_STORE=file` 以启用 0600 权限的本地凭据文件。CLI 使用独立配置目录。
+`--config-dir` / `BOOXCTL_CONFIG_DIR` 选择独立配置目录。`BOOXCTL_TOKEN` 为进程级输入，不自动保存；不要把真实 token 放在命令行参数中。默认使用 macOS Keychain / Windows Credential Manager；Linux 等没有持久后端的环境会明确报错，此时使用 `BOOXCTL_TOKEN`，或显式设置 `BOOXCTL_CREDENTIAL_STORE=file` 以启用 0600 权限的本地凭据文件。CLI 使用独立配置目录。
 
 `auth import` 会先调用用户接口验证 token，只有验证通过才保存。凭据被拒时退出 3 且不写文件；网络失败退出 4，原凭据保持不变。`auth status` 默认只检查本地凭据，加 `--verify` 才会访问网络。
 
@@ -33,14 +33,14 @@ bash scripts/check_cli.sh
 
 ## 发布产物校验
 
-CI 在三个平台分别生成 `sandflos` / `sandflos.exe`、`README.md` 和 `SHA256SUMS`，随后由 `verify-package` 任务下载已上传的 artifact，重新检查并运行。下载后可本地复验：
+CI 在三个平台分别生成 `booxctl` / `booxctl.exe`、`README.md` 和 `SHA256SUMS`，随后由 `verify-package` 任务下载已上传的 artifact，重新检查并运行。下载后可本地复验：
 
 ```bash
 # 已解压目录
-python3 scripts/verify_cli_package.py ./sandflos-linux-latest
+python3 scripts/verify_cli_package.py ./booxctl-linux-latest
 
 # GitHub Actions artifact ZIP
-python3 scripts/verify_cli_package.py ./sandflos-linux-latest.zip
+python3 scripts/verify_cli_package.py ./booxctl-linux-latest.zip
 ```
 
 校验器会拒绝路径穿越、符号链接和重复条目，核对包内文件集合与 SHA-256，检查 Unix 可执行位，并在清空 `DISPLAY`、`WAYLAND_DISPLAY` 和 token 环境变量后运行 `--help`、`--version`，确认不会创建配置目录。它验证产物本身可解包、可执行，不代表真实账号、云端推送或设备接收已经通过。
@@ -48,12 +48,12 @@ python3 scripts/verify_cli_package.py ./sandflos-linux-latest.zip
 本地重新打包：
 
 ```bash
-cargo build --locked --release -p sandflos-cli
+cargo build --locked --release -p booxctl
 python3 scripts/package_cli.py --output cli-package
 python3 scripts/verify_cli_package.py cli-package
 ```
 
-CLI 独立发布使用 `cli-v<版本>` 标签，例如当前 CLI crate 的 `cli-v0.1.0`，发布流程与其他仓库相互独立。`release-cli.yml` 先核对标签与 `crates/cli/Cargo.toml` 版本一致，再在三个平台执行完整检查、生成原生 ZIP 与外部 `.zip.sha256` 校验和、解压运行校验。三个包全部通过后创建 **draft release**，由维护者检查后发布；流程不覆盖已有发布或标签。
+CLI 独立发布使用 `booxctl-v<版本>` 标签，例如当前 CLI crate 的 `booxctl-v0.1.0`，发布流程与其他仓库相互独立。`release-cli.yml` 先核对标签与 `crates/cli/Cargo.toml` 版本一致，再在三个平台执行完整检查、生成原生 ZIP 与外部 `.zip.sha256` 校验和、解压运行校验。三个包全部通过后创建 **draft release**，由维护者检查后发布；流程不覆盖已有发布或标签。
 
 维护者也可从 Actions 手动运行 `CLI release`，选择待验证的分支或 ref，填写与该 ref 的 CLI manifest 版本匹配的标签字符串。手动模式校验和打包所选 ref，不切换到同名标签，该标签也不必已存在；仅上传验收产物，不创建发布或标签。真实标签触发到 draft release 的事件链尚未执行。下载 ZIP 后可使用上述校验器；包内 `SHA256SUMS` 覆盖二进制和 README，外部 `.zip.sha256` 覆盖整个下载文件。
 
@@ -62,40 +62,148 @@ CLI 独立发布使用 `cli-v<版本>` 标签，例如当前 CLI crate 的 `cli-
 Linux 上可选运行真实 CLI 子进程的回环上传基准，测量 200 MiB 上传的采样峰值 RSS 与吞吐，并校验精确字节/内容与单次 OSS PUT。只有这个大型基准需要手动运行；它不在常规 CI 或 `scripts/check_cli.sh` 中：
 
 ```bash
-cargo build --locked --release -p sandflos-cli
+cargo build --locked --release -p booxctl
 python3 scripts/benchmark_cli_upload.py --runs 1 --json
 ```
 
 该脚本使用合成凭据和回环 HTTP 夹具；测量仅代表本机回环路径，不代表生产网络、OSS 或设备接收性能。峰值是约 1 ms 采样的子进程 `VmHWM`，最后一次采样间隔内可能存在未观察到的峰值。方法、实测数据与限制见 [上传性能证据](plans/cli-upload-performance.md)。
 
+## 真实场景配置
+
+以下步骤直接在真实环境操作，不涉及测试夹具。
+
+### 1. 选择配置目录与凭据后端
+
+```bash
+# 推荐：独立目录，便于备份或隔离多个账号
+export BOOXCTL_CONFIG_DIR="$HOME/.config/booxctl"
+
+# macOS / Windows：默认系统钥匙串，无需额外配置
+# Linux：系统钥匙串不可用，必须显式选择文件后端
+export BOOXCTL_CREDENTIAL_STORE=file
+```
+
+默认配置目录是 `dirs::data_dir()/booxctl`（Linux `~/.local/share/booxctl`，macOS `~/Library/Application Support/booxctl`，Windows `%APPDATA%\booxctl`）。Linux 上不设置文件后端时，需要持久化的命令会返回 `credential_store_unavailable`，不会静默写明文。
+
+文件后端的位置是 `<配置目录>/auth.json`，JSON 格式、明文、权限 0600（目录 0700）。钥匙串后端的服务名是 `com.fallingstar.booxctl.<配置目录路径的 SHA-1>`，条目名 `token`。
+
+### 2. 登录
+
+```bash
+# 有交互终端：渲染二维码，用 BOOX 助手 App 扫码，5 分钟内有效
+booxctl auth login --qr
+
+# 无交互环境（CI、脚本、远程）：从 stdin 读 token，绝不放进 argv
+booxctl auth import --token-stdin < ~/.secrets/boox-token
+
+# 确认状态（加 --verify 才会联网校验）
+booxctl --json auth status --verify
+```
+
+`auth import` 写入前会调用用户接口验证 token：被拒退出 3 且不落盘；网络失败退出 4，原凭据保持不变。`BOOXCTL_TOKEN` 生效时，导入和扫码都会被拒绝，避免新凭据被环境变量遮蔽。
+
+### 3. 校验安装
+
+```bash
+booxctl diagnostics            # 离线；路径脱敏为 ~，不输出 token
+booxctl --json diagnostics     # 同一份数据的 JSON 版本
+```
+
+### 4. 推送与查询
+
+```bash
+booxctl push ~/Documents/book.epub      # 上传到 OSS 并推送到设备
+booxctl --json push a.pdf b.epub        # 脚本模式，stdout 只有一个 JSON 对象
+booxctl --json queue list --limit 10    # 查看队列，确认是否重复
+booxctl queue resend MESSAGE_ID         # 重推
+booxctl queue delete MESSAGE_ID --yes   # 删除，必须显式确认
+```
+
+### 5. 本地书库
+
+```bash
+# Calibre：只读打开 metadata.db，按 data-id 取文件后走同一推送流程
+booxctl calibre configure --library "$HOME/Calibre Library"
+booxctl --json calibre list --limit 20
+booxctl calibre push --library "$HOME/Calibre Library" --data-id 7
+
+# Zotero：只读 zotero.sqlite；附件缺失时从 WebDAV 拉取
+booxctl zotero configure --data-dir "$HOME/Zotero"
+booxctl --json zotero list --limit 20
+booxctl zotero webdav configure --url https://dav.example.org/remote.php/dav \
+  --username "$USER" --password-stdin < ~/.secrets/webdav-password
+booxctl zotero push --attachment-id 4
+```
+
+WebDAV 要求 HTTPS（回环地址除外），下载的附件在推送结束后清理。
+
+### 6. 脚本化与中断
+
+```bash
+# 全局选项放在子命令之前
+booxctl --timeout 300 --json push ./big.pdf
+booxctl --timeout 60 --json devices list
+
+# SIGINT 可中断上传、查询和写入，退出 130
+booxctl --json push ./big.pdf; echo "exit=$?"
+```
+
+## 子命令参考
+
+| 命令 | 子命令 | 说明 |
+| --- | --- | --- |
+| `auth` | `login --qr` | 交互扫码登录 |
+| | `import --token-stdin` | 从 stdin 读取并验证 token |
+| | `status [--verify]` | 查看本地凭据状态，可选联网校验 |
+| | `logout` | 删除 CLI 保存的凭据（不影响环境 token） |
+| `push` | `<FILE>...` | 上传并推送一个或多个文件；`--` 之后按字面路径处理 |
+| `queue` | `list [--limit N]` | 查看推送队列（上游窗口最多 30 条） |
+| | `resend ID` | 重推一条记录 |
+| | `delete ID --yes` | 删除记录，必须显式确认 |
+| `devices` | `list` | 列出设备 |
+| | `transfer-url ID` | 输出该设备的局域网互传地址 |
+| `storage` | `status` | 云空间用量 |
+| `reading` | `stats --date YYYY-MM-DD` | 指定日期的阅读统计 |
+| `calibre` | `configure --library PATH...` | 配置一个或多个书库 |
+| | `status` / `list [--limit] [--offset] [--search]` | 查看配置与书目 |
+| | `push --library PATH --data-id ID` | 推送指定书籍 |
+| `zotero` | `configure --data-dir PATH` | 配置 Zotero 目录 |
+| | `detect` / `status` / `list` | 查看配置与条目 |
+| | `webdav configure --url --username --password-stdin` | 配置 WebDAV |
+| | `push --attachment-id ID` | 推送附件 |
+| `diagnostics` | — | 离线、脱敏的环境报告 |
+| `config` | `migrate --from PATH` | 显式从旧 `auth_cache.json` 迁移 |
+
+全局选项：`--config-dir`、`--json`、`--no-input`、`--timeout <SECONDS>`、`--verbose`、`-h/--help`、`-V/--version`。
+
 ## 命令示例
 
 ```bash
 # 首次使用：交互终端扫码
-sandflos auth login --qr
+booxctl auth login --qr
 
 # 无交互环境：通过 stdin 输入 token；不要将秘密直接写在命令参数中
-sandflos auth import --token-stdin < /path/to/private-token-file
-sandflos --json auth status --verify
-sandflos --json push ./book.pdf ./document.epub
-sandflos --json queue list --limit 10
-sandflos queue resend MESSAGE_ID
-sandflos queue delete MESSAGE_ID --yes
+booxctl auth import --token-stdin < /path/to/private-token-file
+booxctl --json auth status --verify
+booxctl --json push ./book.pdf ./document.epub
+booxctl --json queue list --limit 10
+booxctl queue resend MESSAGE_ID
+booxctl queue delete MESSAGE_ID --yes
 
-sandflos devices list
-sandflos devices transfer-url DEVICE_ID
-sandflos storage status
-sandflos reading stats --date 2026-10-29
+booxctl devices list
+booxctl devices transfer-url DEVICE_ID
+booxctl storage status
+booxctl reading stats --date 2026-10-29
 
-sandflos calibre configure --library '/path/to/Calibre Library'
-sandflos --json calibre list --limit 20 --offset 0
-sandflos calibre push --library '/path/to/Calibre Library' --data-id 7
+booxctl calibre configure --library '/path/to/Calibre Library'
+booxctl --json calibre list --limit 20 --offset 0
+booxctl calibre push --library '/path/to/Calibre Library' --data-id 7
 
-sandflos zotero configure --data-dir '/path/to/Zotero'
-sandflos --json zotero list --limit 20
-sandflos zotero webdav configure --url https://example.org/dav --username USER --password-stdin
-sandflos zotero push --attachment-id 4
-sandflos diagnostics
+booxctl zotero configure --data-dir '/path/to/Zotero'
+booxctl --json zotero list --limit 20
+booxctl zotero webdav configure --url https://example.org/dav --username USER --password-stdin
+booxctl zotero push --attachment-id 4
+booxctl diagnostics
 ```
 
 `diagnostics` 是离线命令，不读取网络，也不输出 token。JSON 模式下 `data` 包含版本、平台、配置目录、凭据存储类型、环境 token 是否生效，以及 Calibre/Zotero 的已配置摘要；路径中的用户主目录会替换为 `~`。它不需要 TTY，但会报告配置目录是否存在，不会为了诊断而创建目录。
@@ -104,7 +212,7 @@ sandflos diagnostics
 
 `reading stats --date` 的日期原样作为服务端统计参数传递，不随运行机器的时区换日。当前尚未确认上游统计时区，因此 JSON 明确返回 `timezone: null`，文本返回 `timezone=unspecified`；CLI 不将它解释为本地时间或 UTC。上游缺失的统计保持 `null`，不会补成零。
 
-`auth login --qr` 需要交互终端；JSON、重定向和 `--no-input` 模式请使用 token。环境中的 `SANDFLOS_TOKEN` 优先于磁盘凭据，在该变量生效时导入和扫码会被拒绝，避免新凭据被遮蔽。`auth logout` 只能清除 CLI 保存的凭据，不能撤销外部环境提供的 token。
+`auth login --qr` 需要交互终端；JSON、重定向和 `--no-input` 模式请使用 token。环境中的 `BOOXCTL_TOKEN` 优先于磁盘凭据，在该变量生效时导入和扫码会被拒绝，避免新凭据被遮蔽。`auth logout` 只能清除 CLI 保存的凭据，不能撤销外部环境提供的 token。
 
 Calibre 的 `data-id` 必须与书库路径一起使用；Zotero 的 `attachment-id` 为附件 ID。书库 SQLite 以只读方式访问。WebDAV 要求 HTTPS（回环测试地址除外），下载附件在推送结束后清理；凭据与 CLI 配置目录隔离。队列上游窗口最多 30 条，列表中的限制标记不能解释为全部历史记录。
 

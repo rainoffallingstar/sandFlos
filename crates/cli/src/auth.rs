@@ -12,11 +12,11 @@ use std::{
     time::Duration,
 };
 
-const TOKEN_ENV: &str = "SANDFLOS_TOKEN";
-const STORE_ENV: &str = "SANDFLOS_CREDENTIAL_STORE";
-const TEST_AUTH_ENDPOINT_ENV: &str = "SANDFLOS_TEST_AUTH_BASE_URL";
-const TEST_API_ENDPOINT_ENV: &str = "SANDFLOS_TEST_API_BASE_URL";
-const TEST_OSS_ENDPOINT_ENV: &str = "SANDFLOS_TEST_OSS_BASE_URL";
+const TOKEN_ENV: &str = "BOOXCTL_TOKEN";
+const STORE_ENV: &str = "BOOXCTL_CREDENTIAL_STORE";
+const TEST_AUTH_ENDPOINT_ENV: &str = "BOOXCTL_TEST_AUTH_BASE_URL";
+const TEST_API_ENDPOINT_ENV: &str = "BOOXCTL_TEST_API_BASE_URL";
+const TEST_OSS_ENDPOINT_ENV: &str = "BOOXCTL_TEST_OSS_BASE_URL";
 
 pub fn test_api_endpoints() -> Result<Option<(String, String)>, CliError> {
     fn read(name: &str) -> Result<Option<String>, CliError> {
@@ -84,7 +84,7 @@ pub fn service(options: &GlobalOptions) -> Result<AuthService, CliError> {
 }
 
 fn invalid_auth_endpoint() -> CliError {
-    CliError::usage("SANDFLOS_TEST_AUTH_BASE_URL must be a literal http(s) loopback origin")
+    CliError::usage("BOOXCTL_TEST_AUTH_BASE_URL must be a literal http(s) loopback origin")
         .with_stable_code("invalid_test_auth_endpoint")
 }
 
@@ -106,7 +106,7 @@ pub fn credential(options: &GlobalOptions) -> Result<String, CliError> {
         .ok_or_else(|| {
             CliError::new(
                 crate::error::CliErrorCode::Auth,
-                "not authenticated; run `sandflos auth import --token-stdin` or set SANDFLOS_TOKEN",
+                "not authenticated; run `booxctl auth import --token-stdin` or set BOOXCTL_TOKEN",
             )
             .with_stable_code("missing_credentials")
         })
@@ -127,7 +127,7 @@ pub fn store_kind() -> Result<CredentialStoreKind, CliError> {
 
 fn import(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if args != ["--token-stdin"] {
-        return Err(CliError::usage("usage: sandflos auth import --token-stdin"));
+        return Err(CliError::usage("usage: booxctl auth import --token-stdin"));
     }
     let mut raw = String::new();
     io::stdin().read_to_string(&mut raw).map_err(|err| {
@@ -146,7 +146,7 @@ fn status(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     let verify = match args {
         [] => false,
         [flag] if flag == "--verify" => true,
-        _ => return Err(CliError::usage("usage: sandflos auth status [--verify]")),
+        _ => return Err(CliError::usage("usage: booxctl auth status [--verify]")),
     };
     let status = service(options)?
         .status(verify)
@@ -156,7 +156,7 @@ fn status(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 
 fn logout(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if !args.is_empty() {
-        return Err(CliError::usage("usage: sandflos auth logout"));
+        return Err(CliError::usage("usage: booxctl auth logout"));
     }
     let outcome = service(options)?.logout().map_err(CliError::from_auth)?;
     if options.json {
@@ -174,7 +174,7 @@ fn logout(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 
 fn login(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if !(args.is_empty() || args == ["--qr"]) {
-        return Err(CliError::usage("usage: sandflos auth login --qr"));
+        return Err(CliError::usage("usage: booxctl auth login --qr"));
     }
     if options.json {
         return Err(CliError::usage(

@@ -9,7 +9,7 @@ use std::{
 
 pub fn run(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if !args.is_empty() {
-        return Err(CliError::usage("usage: sandflos diagnostics"));
+        return Err(CliError::usage("usage: booxctl diagnostics"));
     }
     let report = report(options);
     if options.json {
@@ -24,11 +24,11 @@ fn report(options: &GlobalOptions) -> Value {
     let credential_store = match crate::auth::store_kind() {
         Ok(kind) => serde_json::to_value(kind).unwrap_or(Value::Null),
         Err(error) => json!({
-            "configured": env::var("SANDFLOS_CREDENTIAL_STORE").ok(),
+            "configured": env::var("BOOXCTL_CREDENTIAL_STORE").ok(),
             "error": error_body(&error),
         }),
     };
-    let environment_token_active = env::var("SANDFLOS_TOKEN")
+    let environment_token_active = env::var("BOOXCTL_TOKEN")
         .ok()
         .is_some_and(|value| !value.trim().is_empty());
 

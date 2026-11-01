@@ -241,7 +241,7 @@ fn delete(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
         [id] => (id.as_str(), false),
         [id, flag] if flag == "--yes" => (id.as_str(), true),
         [flag, id] if flag == "--yes" => (id.as_str(), true),
-        _ => return Err(CliError::usage("usage: sandflos queue delete ID --yes")),
+        _ => return Err(CliError::usage("usage: booxctl queue delete ID --yes")),
     };
     let backend = DeferredQueueMutationBackend::new(options, timeout(options));
     let mut service = QueueService::new(backend);
@@ -281,7 +281,7 @@ fn report_deleted(
 fn single_id<'a>(args: &'a [String], usage: &str) -> Result<&'a str, CliError> {
     match args {
         [id] if !id.starts_with('-') => Ok(id.as_str()),
-        _ => Err(CliError::usage(format!("usage: sandflos {usage}"))),
+        _ => Err(CliError::usage(format!("usage: booxctl {usage}"))),
     }
 }
 

@@ -12,7 +12,7 @@ fn missing_reading_data_stays_null_instead_of_becoming_zero() {
         &dir.config_dir(),
         server.endpoint(),
     )
-    .env("SANDFLOS_TOKEN", "fixture-token")
+    .env("BOOXCTL_TOKEN", "fixture-token")
     .output()
     .unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", stdout(&output));
@@ -35,7 +35,7 @@ fn requested_calendar_date_survives_year_boundary_and_host_timezone() {
             &dir.config_dir(),
             server.endpoint(),
         )
-        .env("SANDFLOS_TOKEN", "fixture-token")
+        .env("BOOXCTL_TOKEN", "fixture-token")
         .env("TZ", timezone)
         .output()
         .unwrap();
