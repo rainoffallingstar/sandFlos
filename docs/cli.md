@@ -37,10 +37,10 @@ CI 在三个平台分别生成 `booxctl` / `booxctl.exe`、`README.md` 和 `SHA2
 
 ```bash
 # 已解压目录
-python3 scripts/verify_cli_package.py ./booxctl-linux-latest
+python3 scripts/verify_cli_package.py ./booxctl-ubuntu-24.04
 
 # GitHub Actions artifact ZIP
-python3 scripts/verify_cli_package.py ./booxctl-linux-latest.zip
+python3 scripts/verify_cli_package.py ./booxctl-ubuntu-24.04.zip
 ```
 
 校验器会拒绝路径穿越、符号链接和重复条目，核对包内文件集合与 SHA-256，检查 Unix 可执行位，并在清空 `DISPLAY`、`WAYLAND_DISPLAY` 和 token 环境变量后运行 `--help`、`--version`，确认不会创建配置目录。它验证产物本身可解包、可执行，不代表真实账号、云端推送或设备接收已经通过。
@@ -53,9 +53,11 @@ python3 scripts/package_cli.py --output cli-package
 python3 scripts/verify_cli_package.py cli-package
 ```
 
+`cli` 分支推送会自动运行 `CLI release` 打包演练：版本从该提交的 manifest 读取，只上传产物，不创建标签或 release；这是默认分支尚未部署手动入口时也可用的路径。
+
 CLI 独立发布使用 `booxctl-v<版本>` 标签，例如当前 CLI crate 的 `booxctl-v0.1.0`，发布流程与其他仓库相互独立。`release-cli.yml` 先核对标签与 `crates/cli/Cargo.toml` 版本一致，再在三个平台执行完整检查、生成原生 ZIP 与外部 `.zip.sha256` 校验和、解压运行校验。三个包全部通过后创建 **draft release**，由维护者检查后发布；流程不覆盖已有发布或标签。
 
-维护者也可从 Actions 手动运行 `CLI release`，选择待验证的分支或 ref，填写与该 ref 的 CLI manifest 版本匹配的标签字符串。手动模式校验和打包所选 ref，不切换到同名标签，该标签也不必已存在；仅上传验收产物，不创建发布或标签。真实标签触发到 draft release 的事件链尚未执行。下载 ZIP 后可使用上述校验器；包内 `SHA256SUMS` 覆盖二进制和 README，外部 `.zip.sha256` 覆盖整个下载文件。
+当 `release-cli.yml` 已部署到仓库默认分支后，维护者才可从 Actions 手动运行 `CLI release`，选择待验证的分支或 ref，填写与该 ref 的 CLI manifest 版本匹配的标签字符串。手动模式校验和打包所选 ref，不切换到同名标签，该标签也不必已存在；仅上传验收产物，不创建发布或标签。真实标签触发到 draft release 的事件链尚未执行。下载 ZIP 后可使用上述校验器；包内 `SHA256SUMS` 覆盖二进制和 README，外部 `.zip.sha256` 覆盖整个下载文件。
 
 架构与切片设计见 [TDD 方案](plans/cli-review-and-tdd.md)，实施证据见 [集成记录](plans/tdd-integration.md)。
 
@@ -217,3 +219,36 @@ booxctl diagnostics
 Calibre 的 `data-id` 必须与书库路径一起使用；Zotero 的 `attachment-id` 为附件 ID。书库 SQLite 以只读方式访问。WebDAV 要求 HTTPS（回环测试地址除外），下载附件在推送结束后清理；凭据与 CLI 配置目录隔离。队列上游窗口最多 30 条，列表中的限制标记不能解释为全部历史记录。
 
 退出 6 时检查 `data.files` 中每项的结果和已知消息 ID。结果未知可能表示服务端已接受但响应丢失，应先查询队列，再决定是否重推。退出 3 检查认证；退出 4 检查网络；退出 5 检查本地文件与凭据存储。
+
+
+## 安装发布包与支持范围
+
+当前发布矩阵固定为 Ubuntu 24.04 x64（GNU libc）、macOS 15 ARM64、Windows Server 2025 x64 构建和原生运行校验。Linux 已观察到 GLIBC 2.39 要求；不承诺旧 glibc、musl/Alpine、Linux ARM64、Intel Mac 或 Windows ARM64 可运行。macOS 更旧版本、Windows 10/11 工作站的兼容性需单独验收，不能用 runner 通过代替。源码构建可自行验证其它平台。固定 runner 系统版本仍会收到系统补丁，并非可复现镜像锁定。
+
+从目标版本的发布资产下载匹配 CPU/系统的 ZIP 和同名 `.zip.sha256`，先校验整个 ZIP，再解压并核对包内 `SHA256SUMS`。以下以 Linux x64 的 v0.1.0 为例，必须先确认该版本已经发布：
+
+```bash
+sha256sum -c booxctl-v0.1.0-x86_64-unknown-linux-gnu.zip.sha256
+unzip booxctl-v0.1.0-x86_64-unknown-linux-gnu.zip -d booxctl-package
+(cd booxctl-package && sha256sum -c SHA256SUMS)
+mkdir -p "$HOME/.local/bin"
+install -m 755 booxctl-package/booxctl "$HOME/.local/bin/booxctl"
+export PATH="$HOME/.local/bin:$PATH"
+booxctl --version
+booxctl --help
+```
+
+macOS 用 `shasum -a 256 -c` 校验对应 ARM64 包；解压后将 `booxctl` 放到 PATH 中并赋予执行权限。Windows 用 `Get-FileHash -Algorithm SHA256` 对照校验和，`Expand-Archive` 解压，将 `booxctl.exe` 所在目录加入用户 PATH。若系统拦截下载的程序，先核验来源和校验和；当前没有代码签名/公证验收，不应批量关闭系统保护。
+
+只有源码/CI artifact 时可以按本文构建或复验，不应将 CI artifact 当成已经正式发布的版本。安装后依次执行 `diagnostics`、认证和单文件推送；真实接收需要在设备上确认。
+
+## 从旧 sandflos CLI 升级
+
+本版命令、环境变量、默认目录和钥匙串命名空间改为 `booxctl`，属于显式切换，不自动迁移或删除旧数据。脚本需将 `SANDFLOS_*` 改为对应 `BOOXCTL_*`，并检查旧二进制是否仍在 PATH。
+
+- 文件凭据后端：先备份旧 CLI 目录；可用 `BOOXCTL_CONFIG_DIR` 指向原目录并显式选择 `BOOXCTL_CREDENTIAL_STORE=file`，复用原 CLI 的 `auth.json`、书库配置及 `webdav/auth.json`。这会继续使用原目录，不是自动复制。先用离线 `auth status` 检查，再按需 `auth status --verify`。
+- 钥匙串后端：即使配置目录相同，旧 service 的 BOOX token / WebDAV 密码也不会被新 service 读取。使用 `auth login --qr` 或 `auth import --token-stdin` 重新登录，再重新执行 `zotero webdav configure`；不要把密码或 token 放在 argv。旧钥匙串条目保留，由用户确认后自行处理。
+- 新配置目录：重新运行 `calibre configure`、`zotero configure` 和必要的 WebDAV 配置。源书库只读，不会迁移或修改图书。
+- `config migrate --from` 面向旧桌面的 `auth_cache.json`，仅导入经验证的 token，不负责迁移整个旧 CLI 目录或钥匙串；源文件保留，目标已有凭据时拒绝覆盖。
+
+不支持自动读取旧环境变量作为回退，避免不知情地使用另一个账号。

@@ -13,11 +13,15 @@ cargo build --locked --release -p booxctl
 
 Windows 二进制名为 `booxctl.exe`。仓库通过 `rust-toolchain.toml` 固定 Rust 1.97.1，并保留 `Cargo.lock`；CI 使用相同编译器。GitHub Actions 为 Linux / macOS / Windows 构建独立二进制与带校验和的发布包。
 
+预编译包的安装、平台范围及旧 CLI 升级步骤见 [CLI 使用说明](docs/cli.md#安装发布包与支持范围)。正式发布前的人工验收见 [发布执行清单](docs/plans/cli-release-execution.md)。
+
 ## 快速开始
 
 ```bash
-# 登录：默认浏览器打开本地回环登录页，token 回流后保存在系统凭据存储
-booxctl auth login
+# Linux 持久化登录先显式启用文件后端；macOS/Windows 默认系统钥匙串
+# export BOOXCTL_CREDENTIAL_STORE=file
+# 在交互终端显示二维码，用 BOOX 助手 App 扫码
+booxctl auth login --qr
 
 # 查看授权与本地凭据状态（加 --verify 才会访问网络）
 booxctl --json auth status
@@ -26,9 +30,9 @@ booxctl --json auth status
 booxctl push ./book.epub
 
 # 只读查询
-booxctl --json devices
-booxctl --json storage
-booxctl --json reading
+booxctl --json devices list
+booxctl --json storage status
+booxctl --json reading stats --date 2026-11-04
 ```
 
 ## 配置
@@ -60,8 +64,8 @@ Linux 没有可用的系统钥匙串时会明确报错，不会静默降级为�
 
 ## 能力
 
-- **登录授权**：本地回环登录页 + 默认浏览器完成二维码授权，token 直接进入 CLI 凭据存储。
-- **直传 OSS**：STS 签名 + 分片上传，`read` 表示本地读取、`uploaded` 表示 OSS 已确认。
+- **登录授权**：终端显示二维码，由手机扫码；成功后保存到所选凭据后端。
+- **直传 OSS**：STS 签名 + 流式单次 PUT（不支持断点续传），`read` 表示本地读取、`uploaded` 表示 OSS 已确认。
 - **可中断**：SIGINT 中断认证、配额、bucket、STS、上传、消息写入、同步确认和最终提交，退出 130 并停止后续文件。
 - **安全的失败语义**：已确认成功保留；可能已写入但未确认的结果返回 unknown / 部分完成（退出 6），不盲目重试。
 - **只读查询与队列**：devices / storage / reading 与 queue list/resend/delete 均可取消。

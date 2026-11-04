@@ -11,6 +11,7 @@ Commands:
   calibre      Read a local Calibre library and push books
   zotero       Read a local Zotero library and push attachments
   diagnostics  Print an offline, redacted diagnostic report
+  config       Explicitly migrate legacy authentication
   help         Print this help message
 
 Options:
@@ -38,6 +39,7 @@ Commands:
   calibre      Read a local Calibre library and push books
   zotero       Read a local Zotero library and push attachments
   diagnostics  Print an offline, redacted diagnostic report
+  config       Explicitly migrate legacy authentication
   help         Print this help message
 
 Options:
