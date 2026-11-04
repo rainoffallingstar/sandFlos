@@ -1,13 +1,10 @@
 use crate::args::GlobalOptions;
 use crate::error::{CliError, CliErrorCode};
 use boox_core::cli_libraries::{
-    configure_webdav, configure_zotero, zotero_attachment, zotero_directory, zotero_list,
+    configure_webdav, configure_zotero, zotero_attachment_with_cancel, zotero_directory,
+    zotero_list,
 };
-use std::{
-    io::{self, Read},
-    path::PathBuf,
-    time::Duration,
-};
+use std::{path::PathBuf, time::Duration};
 
 pub fn run(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     let Some(subcommand) = args.first().map(String::as_str) else {
@@ -150,13 +147,12 @@ fn webdav(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
             "--password-stdin is required; passwords cannot be passed in argv",
         ));
     }
-    let mut password = String::new();
-    io::stdin().read_to_string(&mut password).map_err(|error| {
-        CliError::new(
-            CliErrorCode::LocalIo,
-            format!("cannot read password: {error}"),
-        )
-    })?;
+    let password = crate::auth::read_secret_from_stdin("password")?;
+    if crate::cancel::requested() {
+        return Err(CliError::from_auth(
+            boox_core::auth_service::AuthError::cancelled(),
+        ));
+    }
     let password = password.trim_end_matches(['\r', '\n']);
     let config_dir = crate::auth::config_dir(options)?;
     configure_webdav(&config_dir, &url, &username, password).map_err(local_library_error)?;
@@ -175,7 +171,9 @@ fn push(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
         .map_err(|_| CliError::usage("--attachment-id requires an integer"))?;
     let config_dir = crate::auth::config_dir(options)?;
     let timeout = Duration::from_secs(options.timeout_secs.unwrap_or(90));
-    let attachment = zotero_attachment(&config_dir, id, timeout).map_err(local_library_error)?;
+    let attachment =
+        zotero_attachment_with_cancel(&config_dir, id, timeout, Some(&crate::cancel::FLAG))
+            .map_err(local_library_error)?;
     crate::push::push_paths(options, std::slice::from_ref(&attachment.path))
 }
 
@@ -242,7 +240,12 @@ fn local_library_error(error: boox_core::cli_libraries::LibraryError) -> CliErro
         ServiceErrorKind::Partial | ServiceErrorKind::Unknown => CliErrorCode::Partial,
         ServiceErrorKind::LocalIo | ServiceErrorKind::Internal => CliErrorCode::LocalIo,
     };
-    CliError::new(code, error.message).with_stable_code("library_error")
+    let stable_code = if error.kind == ServiceErrorKind::Cancelled {
+        "cancelled"
+    } else {
+        "library_error"
+    };
+    CliError::new(code, error.message).with_stable_code(stable_code)
 }
 
 fn emit_json(value: serde_json::Value) -> Result<(), CliError> {

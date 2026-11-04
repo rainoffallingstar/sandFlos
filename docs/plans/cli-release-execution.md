@@ -7,7 +7,7 @@
 沿用已确认 S1 CLI 子进程、S2 core 公共接口、S3 合成回环协议和 S4 安装产物；不新增未协商测试边界。每片先一个可运行行为 Red，再最小修复、回归和审查。编译/setup 失败不记 Red，不回滚已工作实现补造历史。
 
 1. 认证取消与并发迁移：取消前后持久化一致；目标已存在不可被竞态覆盖；普通 import 保留显式替换语义。
-2. queue 退出码与设备候选地址：写前取消 130、写后 unknown 6；push 原有 130 保留；ARP-only 地址不丢失，不声称已验证设备服务。
+2. queue 退出码与设备候选地址：写前取消 130、写后 unknown 6；push 原有 130 保留；ARP-only 地址不丢失，不声称已验证设备服务。设备地址部分已完成：`build_dashboard_devices_with_environment` 在 API 无 IP 时回退到匹配 MAC 的 ARP 地址，两者都存在时优先使用 MAC 匹配的 ARP 地址，避免云端公网 IP 压过已知局域网候选；公共测试 `crates/core/tests/device_contract.rs`（`arp_only_address_remains_a_transfer_candidate`、`arp_candidate_wins_over_a_nonlocal_cloud_address`），命令 `CARGO_NET_OFFLINE=true cargo test --locked -p boox-core --test device_contract`，退出 0。初始 Red 日志 `/tmp/booxctl-device-arp-red.log`（`transfer_host` 为 `None`），Green 日志 `/tmp/booxctl-device-public-final-green.log`；优先级行为的 Red/Green 日志为 `/tmp/booxctl-device-finish-red.log`、`/tmp/booxctl-device-finish-green.log`。候选地址沿用现有默认 HTTP 端口，ARP 不提供设备服务端口或在线证明；真实设备服务可达性与实际接收仍未验收。未使用真实设备或生产 WebSocket。定向查询回归 `query_cancel` 11 项、`query_queue_e2e` 4 项、`query_validation` 4 项通过，日志 `/tmp/booxctl-device-targeted-check.log`；core 定向 clippy 通过，日志 `/tmp/booxctl-device-clippy.log`。并行工作区中的 auth QR 时序测试和 `library_cancel` clippy 未由本片处理。
 3. Zotero：配置与凭据能力准确投影；WebDAV 网络等待取消与清理在可控回环中验收。
 4. 文档与发布：修正 README、明确升级步骤及有限支持矩阵；固定三个 runner 版本，增加 release workflow 的 cli push 演练入口，manifest 取版本，只打包不发布。
 5. 父统一检查、审查、提交及 GitHub 当前 SHA 构建核对。完成一个切片不代表正式发布全部完成。
@@ -35,4 +35,18 @@
 
 ## 最终证据
 
-实施中；最终测试、提交、CI 与逐项完成状态由父集成后补录。
+本轮保留并完成进入工作区时已有的修订，使用 DeepSeek V4.1 Flash / high 实施，父审查收口。跟进消息一度不可读，改用本地审查文件继续；父最终接管整合。
+
+- S1/S2：认证保存前取消检查、Unix stdin 可取消及标志恢复、二维码阶段取消、迁移锁内拒绝覆盖；文件/钥匙串写入参与互斥。真实钥匙串验收仍待人工。
+- F1/F3/R4：queue unknown 退出 6、写前取消 130，push 原契约保持；WebDAV 列表能力投影、下载响应头/体取消、容量限制和清理。
+- F4：ARP-only 与陈旧云端 IP 的候选选择；探测命令两秒期限、有限输出捕获和直接子进程回收。候选地址不证明服务在线。
+- S3/F2/R1/R2：此前 `46fad34` 已完成说明/升级/安装/支持矩阵及 cli push 三平台打包演练；对应 CLI run `41761845041` 成功、release rehearsal `41761845065` 成功。
+
+本轮 TDD 审计：[认证](tdd-release-auth.md)、[队列与书库](tdd-release-queue-library.md)、[设备](tdd-release-device.md)。继承代码缺失的 Red 证据明确标记；不回滚实现补造历史。统一检查、提交和新 SHA 的 CI 结果待下方补录。
+
+
+### 本轮本机统一验收
+
+`CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true bash scripts/check_cli.sh`：退出 **0**，**267 Rust + 7 Python** 通过；fmt、严格 clippy、release 构建、依赖边界、无显示 smoke、打包和消费端校验全部通过。最终日志 `/tmp/booxctl-release-final-check2.log`。首轮测试全绿但 clippy 报 needless_return（退出101），等价修正后完整重跑；不是行为 Red。
+
+最终审查：已修复代码层 S1/S2/F1/F3/F4，R4 的 WebDAV 网络等待已可取消；Windows stdin、平台系统调用、ZIP内存上限和真实业务验收限制仍明确保留。S3/F2/R1/R2 的文档及自动演练由前序提交完成。上表人工验收和真正 tag→draft 未完成，不能宣称正式发布完成。当前代码提交后的 GitHub run 需要按精确 SHA 核验；远端结果见本次交付消息，下一轮以实际 HEAD 重查。

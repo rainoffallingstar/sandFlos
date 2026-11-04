@@ -1,5 +1,7 @@
 # CLI 方案逐项状态
 
+> 当前入口（2026-11-04）：发布整改、剩余技术债和人工验收以 [cli-release-execution.md](cli-release-execution.md) 为准；下列旧 SHA、数量、桌面条目和禁止提交说明均为历史，不代表当前 CLI 状态。当前轮用户已授权父 agent 提交代码，真实账号与 tag/release 仍不在授权范围。
+
 更新：2026-10-31。基线仍 `3cc6fb7f29167bd722487c5fde0008c29f3f63ae`。此前六片完成；本片新增桌面显式刷新及错误保留，12项公共回归，父完整267项Rust、7项Python与fmt/strictclippy/release/产物检查全通过。改动未提交推送，没有当前代码三平台CI；旧 `c460ab6`/run `41024736353` 7/7只对应旧SHA。GPUI离线检查缺aes缓存，未进入app类型检查；完整桌面登录持久化/上传会话与人工验收仍未完成。原方案 `cli-review-and-tdd.md`；最新验收 `cli-handoff.md`，技术债及下一步 `cli-next-steps-and-debt.md`。本片Red仅有writer报告、父无原始日志，不能列为独立核实test-first，见 `tdd-desktop-refresh.md`。
 
 | 切片 | 已实现或补验 | 尚需单列的验收 |

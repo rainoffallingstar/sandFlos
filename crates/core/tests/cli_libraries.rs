@@ -190,6 +190,87 @@ fn zotero_list_reads_explicit_database_and_filters_titles() {
     );
     fs::remove_dir_all(temp_dir).unwrap();
 }
+
+#[test]
+fn zotero_list_reports_webdav_download_only_when_credentials_are_usable() {
+    use boox_core::auth_service::CredentialStoreKind;
+    use boox_core::cli_libraries::*;
+
+    let root = std::env::temp_dir().join(format!("cli-zotero-flag-{}", uuid::Uuid::new_v4()));
+    let data = root.join("data");
+    let config = root.join("config");
+    fs::create_dir_all(&data).unwrap();
+    let conn = rusqlite::Connection::open(data.join("zotero.sqlite")).unwrap();
+    conn.execute_batch(
+        "
+        CREATE TABLE libraries (libraryID INTEGER PRIMARY KEY, type TEXT, editable INT, filesEditable INT, version INT, storageVersion INT, lastSync INT, archived INT);
+        CREATE TABLE itemTypes (itemTypeID INTEGER PRIMARY KEY, typeName TEXT);
+        CREATE TABLE items (itemID INTEGER PRIMARY KEY, itemTypeID INT, dateAdded TEXT, dateModified TEXT, clientDateModified TEXT, libraryID INT, key TEXT, version INT, synced INT);
+        CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT, fieldFormatID INT);
+        CREATE TABLE itemData (itemID INT, fieldID INT, valueID INT);
+        CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT);
+        CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, firstName TEXT, lastName TEXT, fieldMode INT);
+        CREATE TABLE itemCreators (itemID INT, creatorID INT, creatorTypeID INT, orderIndex INT);
+        CREATE TABLE itemAttachments (itemID INTEGER PRIMARY KEY, parentItemID INT, linkMode INT, contentType TEXT, charsetID INT, path TEXT, syncState INT, storageModTime INT, storageHash TEXT, lastProcessedModificationTime INT);
+        INSERT INTO libraries (libraryID, type, editable, filesEditable, version, storageVersion, lastSync, archived) VALUES (1, 'user', 1, 1, 0, 0, 0, 0);
+        INSERT INTO itemTypes (itemTypeID, typeName) VALUES (3, 'attachment'), (7, 'book');
+        INSERT INTO items (itemID, itemTypeID, dateAdded, dateModified, clientDateModified, libraryID, key, version, synced) VALUES (1, 7, '2024-01-01', '2024-01-02', '2024-01-02', 1, 'BOOK1', 0, 0), (2, 3, '2024-01-01', '2024-01-02', '2024-01-02', 1, 'ABCDEFGH', 0, 0);
+        INSERT INTO fields (fieldID, fieldName, fieldFormatID) VALUES (1, 'title', 0);
+        INSERT INTO itemDataValues (valueID, value) VALUES (1, 'Remote Book');
+        INSERT INTO itemData (itemID, fieldID, valueID) VALUES (1, 1, 1);
+        INSERT INTO itemAttachments (itemID, parentItemID, linkMode, contentType, charsetID, path, syncState, storageModTime, storageHash, lastProcessedModificationTime) VALUES (2, 1, 0, 'application/pdf', 0, 'storage:book.pdf', 0, 0, '', 0);
+        ",
+    )
+    .unwrap();
+    drop(conn);
+    configure_zotero(&config, &data).unwrap();
+
+    let attachment_flag =
+        || zotero_list(&config, Some(10), Some(0), None).unwrap()[0].attachments[0].clone();
+
+    let without_webdav = attachment_flag();
+    assert!(!without_webdav.local_exists);
+    assert!(!without_webdav.can_download_from_webdav);
+    assert_eq!(without_webdav.status_label, "本地附件缺失");
+
+    // The list projection describes configured capability, not a live remote
+    // check: this loopback port has no listener.
+    configure_webdav_with_store(
+        &config,
+        "http://127.0.0.1:9/zotero",
+        "user",
+        "password",
+        CredentialStoreKind::File,
+    )
+    .unwrap();
+    let configured = attachment_flag();
+    assert!(configured.can_download_from_webdav);
+    assert!(!configured.can_push_directly);
+    assert_eq!(configured.status_label, "本地缺失，可从 WebDAV 拉取");
+
+    // A credential that loads but cannot be decoded is not usable: push would
+    // fail before opening a connection, so the list must not offer it.
+    fs::write(
+        config.join("webdav").join("auth.json"),
+        br#"{"schema_version":1,"token":"%%%not-base64%%%","updated_ms":0}"#,
+    )
+    .unwrap();
+    let undecodable = attachment_flag();
+    assert!(!undecodable.can_download_from_webdav);
+    assert_eq!(undecodable.status_label, "本地附件缺失");
+    let error = zotero_attachment(&config, 2, std::time::Duration::from_secs(2))
+        .err()
+        .expect("undecodable WebDAV credentials must fail the download");
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+    assert_eq!(error.message, "invalid WebDAV credential");
+
+    fs::remove_file(config.join("webdav").join("auth.json")).unwrap();
+    let unavailable = attachment_flag();
+    assert!(!unavailable.can_download_from_webdav);
+    assert_eq!(unavailable.status_label, "本地附件缺失");
+
+    fs::remove_dir_all(root).unwrap();
+}
 #[test]
 fn missing_local_attachment_downloads_webdav_and_cleans_up() {
     webdav_archive_case("book.pdf", true, 200);
@@ -436,6 +517,60 @@ fn webdav_expanded_archive_over_limit_is_rejected_before_extraction() {
     join_bounded(worker);
     assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
     assert_eq!(error.message, "expanded ZIP too large");
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn webdav_archive_without_content_length_is_bounded_before_buffering() {
+    use boox_core::{auth_service::CredentialStoreKind, cli_libraries::*};
+    use std::io::{BufRead, Write};
+
+    let root = std::env::temp_dir().join(format!("cli-webdav-chunked-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join("zotero.sqlite")).unwrap();
+    db.execute_batch("CREATE TABLE items(itemID INTEGER,key TEXT); CREATE TABLE itemAttachments(itemID INTEGER,path TEXT,linkMode INTEGER); INSERT INTO items VALUES(4,'ABCDEFGH'); INSERT INTO itemAttachments VALUES(4,'storage:book.pdf',0);").unwrap();
+    let config = root.join("config");
+    configure_zotero(&config, &root).unwrap();
+    let server = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let url = format!("http://{}/zotero", server.local_addr().unwrap());
+    configure_webdav_with_store(&config, &url, "user", "password", CredentialStoreKind::File)
+        .unwrap();
+    let worker = std::thread::spawn(move || {
+        let Some(mut stream) = accept_bounded(server) else {
+            return;
+        };
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            if line == "\r\n" {
+                break;
+            }
+            line.clear();
+        }
+        // A chunked response has no Content-Length. The client must cap the
+        // streamed body itself rather than buffering it without a limit.
+        let _ = stream.write_all(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+        );
+        let chunk = vec![0_u8; 1024 * 1024];
+        for _ in 0..201 {
+            let header = format!("{:x}\r\n", chunk.len());
+            if stream.write_all(header.as_bytes()).is_err()
+                || stream.write_all(&chunk).is_err()
+                || stream.write_all(b"\r\n").is_err()
+            {
+                return;
+            }
+        }
+        let _ = stream.write_all(b"0\r\n\r\n");
+    });
+    let error = zotero_attachment(&config, 4, std::time::Duration::from_secs(30))
+        .err()
+        .expect("oversized chunked archive must fail");
+    join_bounded(worker);
+    assert_eq!(error.kind, boox_core::services::ServiceErrorKind::LocalIo);
+    assert_eq!(error.message, "WebDAV archive too large");
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }

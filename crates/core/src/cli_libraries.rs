@@ -5,6 +5,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::atomic::AtomicBool,
 };
 #[derive(Debug)]
 pub struct LibraryError {
@@ -220,18 +221,57 @@ pub fn zotero_list(
     offset: Option<usize>,
     search: Option<String>,
 ) -> Result<Vec<crate::models::ZoteroItemSummary>, LibraryError> {
-    let data = zotero_directory(config_dir)?.ok_or("configure Zotero first")?;
+    let config = load(config_dir)?;
+    let data = config.zotero.clone().ok_or("configure Zotero first")?;
     if limit == Some(0) {
         return Ok(vec![]);
     }
+    // The list projection describes whether push could attempt a WebDAV
+    // download; it deliberately does not contact the remote server.
+    let can_download_from_webdav = webdav_credentials_available(config_dir, &config);
     crate::zotero::list_items_at(
         data.to_str().ok_or("invalid data directory")?,
         limit,
         offset,
         search,
-        false,
+        can_download_from_webdav,
     )
     .map_err(|_| "cannot query Zotero database".into())
+}
+
+fn webdav_credentials_available(config_dir: &Path, config: &LibraryConfig) -> bool {
+    config
+        .webdav
+        .as_ref()
+        .is_some_and(|webdav| load_webdav_password(config_dir, webdav).is_ok())
+}
+
+fn load_webdav_password(config_dir: &Path, webdav: &WebDavConfig) -> Result<String, LibraryError> {
+    let kind = if webdav.file_store {
+        crate::auth_service::CredentialStoreKind::File
+    } else {
+        crate::auth_service::CredentialStoreKind::platform_default()
+    };
+    let stored = crate::auth_service::credential_store(
+        kind,
+        &crate::auth_service::AppPaths::new(config_dir.join("webdav")),
+    )
+    .load()
+    .map_err(|_| "WebDAV credentials unavailable")?
+    .ok_or("WebDAV password missing")?;
+    // CredentialStore validates BOOX token syntax; encode opaque WebDAV
+    // passwords so whitespace and Unicode survive its persistence boundary.
+    // Older configurations stored the password directly and remain readable.
+    if webdav.password_base64 {
+        Ok(String::from_utf8(
+            BASE64
+                .decode(stored.token)
+                .map_err(|_| "invalid WebDAV credential")?,
+        )
+        .map_err(|_| "invalid WebDAV credential")?)
+    } else {
+        Ok(stored.token)
+    }
 }
 pub struct ResolvedAttachment {
     pub path: PathBuf,
@@ -247,7 +287,20 @@ impl Drop for ResolvedAttachment {
 pub fn zotero_attachment(
     config_dir: &Path,
     id: i64,
-    _timeout: std::time::Duration,
+    timeout: std::time::Duration,
+) -> Result<ResolvedAttachment, LibraryError> {
+    zotero_attachment_with_cancel(config_dir, id, timeout, None)
+}
+
+/// Resolve a Zotero attachment, interrupting a missing local file's WebDAV
+/// download when `cancel_flag` is set. The flag is checked before the request
+/// and while its response is in flight on an owned runtime; dropping the
+/// future closes the connection and no blocking worker is left behind.
+pub fn zotero_attachment_with_cancel(
+    config_dir: &Path,
+    id: i64,
+    timeout: std::time::Duration,
+    cancel_flag: Option<&'static AtomicBool>,
 ) -> Result<ResolvedAttachment, LibraryError> {
     let data = zotero_directory(config_dir)?.ok_or("configure Zotero first")?;
     let db = rusqlite::Connection::open_with_flags(
@@ -268,7 +321,7 @@ pub fn zotero_attachment(
     }
     let path = data.join("storage").join(&key).join(relative);
     if !path.exists() {
-        return download_attachment(config_dir, &key, relative, _timeout);
+        return download_attachment(config_dir, &key, relative, timeout, cancel_flag);
     }
     let path = fs::canonicalize(path).map_err(|_| "cannot resolve local attachment")?;
     if !path.starts_with(fs::canonicalize(&data).map_err(|_| "invalid Zotero directory")?)
@@ -281,6 +334,26 @@ pub fn zotero_attachment(
         cleanup: None,
     })
 }
+pub(crate) fn cancel_requested(flag: Option<&'static AtomicBool>) -> bool {
+    flag.is_some_and(|value| value.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn library_cancelled() -> LibraryError {
+    LibraryError {
+        kind: crate::services::ServiceErrorKind::Cancelled,
+        message: "WebDAV download cancelled".into(),
+    }
+}
+
+fn library_request_error(error: crate::cancellable_push::RequestError) -> LibraryError {
+    match error {
+        crate::cancellable_push::RequestError::Cancelled => library_cancelled(),
+        crate::cancellable_push::RequestError::Api(_) => {
+            LibraryError::network("WebDAV network failure")
+        }
+    }
+}
+
 fn safe_relative(value: &str) -> bool {
     !value.is_empty()
         && !value.contains('\\')
@@ -361,6 +434,7 @@ fn download_attachment(
     key: &str,
     preferred: &str,
     timeout: std::time::Duration,
+    cancel_flag: Option<&'static AtomicBool>,
 ) -> Result<ResolvedAttachment, LibraryError> {
     use std::io::Read;
     const MAX: u64 = 200 * 1024 * 1024;
@@ -368,39 +442,21 @@ fn download_attachment(
     let config = config
         .webdav
         .ok_or("local attachment missing; configure WebDAV")?;
-    let password = crate::auth_service::credential_store(
-        if config.file_store {
-            crate::auth_service::CredentialStoreKind::File
-        } else {
-            crate::auth_service::CredentialStoreKind::platform_default()
-        },
-        &crate::auth_service::AppPaths::new(config_dir.join("webdav")),
-    )
-    .load()
-    .map_err(|_| "WebDAV credentials unavailable")?
-    .ok_or("WebDAV password missing")?;
-    // CredentialStore validates BOOX token syntax; encode opaque WebDAV
-    // passwords so whitespace and Unicode survive its persistence boundary.
-    // Older configurations stored the password directly and remain readable.
-    let password = if config.password_base64 {
-        String::from_utf8(
-            BASE64
-                .decode(password.token)
-                .map_err(|_| "invalid WebDAV credential")?,
-        )
-        .map_err(|_| "invalid WebDAV credential")?
-    } else {
-        password.token
-    };
-    let client = reqwest::blocking::Client::builder()
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| "cannot build WebDAV client")?;
-    let response = client
-        .get(format!("{}/{key}.zip", config.url))
-        .basic_auth(&config.username, Some(&password))
-        .send()
+    let password = load_webdav_password(config_dir, &config)?;
+    crate::cancellable_push::check_before_request(cancel_flag).map_err(library_request_error)?;
+    let runtime = crate::cancellable_push::runtime().map_err(library_request_error)?;
+    let client = crate::cancellable_push::client(timeout).map_err(library_request_error)?;
+    let url = format!("{}/{key}.zip", config.url);
+    let username = config.username.clone();
+    let mut response =
+        crate::cancellable_push::block_on_cancellable(&runtime, cancel_flag, async move {
+            client
+                .get(url)
+                .basic_auth(username, Some(password))
+                .send()
+                .await
+        })
+        .map_err(library_request_error)?
         .map_err(|_| LibraryError::network("WebDAV network failure"))?;
     if !response.status().is_success() {
         let status = response.status().as_u16();
@@ -420,13 +476,32 @@ fn download_attachment(
     if response.content_length().is_some_and(|len| len > MAX) {
         return Err("WebDAV archive too large".into());
     }
-    let mut bytes = Vec::new();
-    response
-        .take(MAX + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| LibraryError::network("cannot read WebDAV response"))?;
-    if bytes.len() as u64 > MAX {
-        return Err("WebDAV archive too large".into());
+    // Read the body in chunks so a response without Content-Length cannot
+    // buffer past the archive limit. The limit is checked before each chunk is
+    // appended, and the cancellable poller drops the future on SIGINT.
+    let downloaded = crate::cancellable_push::block_on_cancellable(&runtime, cancel_flag, async {
+        let mut downloaded = Vec::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if (downloaded.len() as u64).saturating_add(chunk.len() as u64) > MAX {
+                        return Err(true);
+                    }
+                    downloaded.extend_from_slice(&chunk);
+                }
+                Ok(None) => return Ok(downloaded),
+                Err(_) => return Err(false),
+            }
+        }
+    })
+    .map_err(library_request_error)?;
+    let bytes = match downloaded {
+        Ok(bytes) => bytes,
+        Err(true) => return Err("WebDAV archive too large".into()),
+        Err(false) => return Err(LibraryError::network("cannot read WebDAV response")),
+    };
+    if cancel_requested(cancel_flag) {
+        return Err(library_cancelled());
     }
     let mut archive =
         zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|_| "invalid WebDAV ZIP")?;

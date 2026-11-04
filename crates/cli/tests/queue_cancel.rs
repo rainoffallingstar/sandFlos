@@ -539,17 +539,10 @@ fn interrupted_output(child: ChildGuard) -> (Output, Duration) {
     (output, interrupted.elapsed())
 }
 
-fn assert_prompt_cancel(output: &Output, elapsed: Duration) {
+fn assert_prompt_exit(output: &Output, elapsed: Duration) {
     assert!(
         elapsed < PROMPT_EXIT,
         "SIGINT must stop the held queue request promptly, took {elapsed:?}; stdout: {} stderr: {}",
-        stdout(output),
-        stderr(output)
-    );
-    assert_eq!(
-        output.status.code(),
-        Some(130),
-        "stdout: {} stderr: {}",
         stdout(output),
         stderr(output)
     );
@@ -559,9 +552,31 @@ fn assert_prompt_cancel(output: &Output, elapsed: Duration) {
     assert!(!stdout(output).contains("fixture-session"));
 }
 
+fn assert_prompt_cancel(output: &Output, elapsed: Duration) {
+    assert_prompt_exit(output, elapsed);
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "stdout: {} stderr: {}",
+        stdout(output),
+        stderr(output)
+    );
+}
+
 fn assert_cancelled_error(output: &Output, elapsed: Duration) {
     assert_prompt_cancel(output, elapsed);
     assert_eq!(json_stdout(output)["error"]["code"], "cancelled");
+}
+
+fn assert_unknown_exit(output: &Output, elapsed: Duration) {
+    assert_prompt_exit(output, elapsed);
+    assert_eq!(
+        output.status.code(),
+        Some(6),
+        "a submitted-but-unconfirmed queue mutation must exit 6 (unknown): stdout: {} stderr: {}",
+        stdout(output),
+        stderr(output)
+    );
 }
 
 fn count(records: &[String], prefix: &str) -> usize {
@@ -649,7 +664,14 @@ fn sigint_while_resend_put_response_is_slow_reports_unknown_without_retry() {
         &["--json", "queue", "resend", "doc-fixture"],
     );
     let (output, elapsed) = interrupted_output(child);
-    assert_prompt_cancel(&output, elapsed);
+    assert_prompt_exit(&output, elapsed);
+    assert_eq!(
+        output.status.code(),
+        Some(6),
+        "a submitted-but-unconfirmed resend must exit 6 (unknown): stdout: {} stderr: {}",
+        stdout(&output),
+        stderr(&output)
+    );
     let records = server.finish();
     assert_eq!(count(&records, "PUT /neocloud/doc-fixture"), 1);
     let value = json_stdout(&output);
@@ -681,7 +703,7 @@ fn sigint_while_delete_response_is_slow_reports_unknown_and_skips_message_delete
         &["--json", "queue", "delete", "doc-fixture", "--yes"],
     );
     let (output, elapsed) = interrupted_output(child);
-    assert_prompt_cancel(&output, elapsed);
+    assert_unknown_exit(&output, elapsed);
     let records = server.finish();
     assert_eq!(count(&records, "GET /neocloud/doc-fixture"), 1);
     assert_eq!(count(&records, "DELETE /neocloud/doc-fixture"), 1);
@@ -701,7 +723,7 @@ fn sigint_while_message_delete_is_slow_reports_partial_unknown() {
         &["--json", "queue", "delete", "doc-fixture", "--yes"],
     );
     let (output, elapsed) = interrupted_output(child);
-    assert_prompt_cancel(&output, elapsed);
+    assert_unknown_exit(&output, elapsed);
     let records = server.finish();
     assert_eq!(count(&records, "DELETE /neocloud/doc-fixture"), 1);
     assert_eq!(count(&records, "POST /api/1/push/message/batchDelete"), 1);
@@ -834,7 +856,7 @@ fn sigint_while_resend_put_body_stalls_reports_unknown_without_retry() {
         &["--json", "queue", "resend", "doc-fixture"],
     );
     let (output, elapsed) = interrupted_output(child);
-    assert_prompt_cancel(&output, elapsed);
+    assert_unknown_exit(&output, elapsed);
     let records = server.finish();
     assert_eq!(count(&records, "PUT /neocloud/doc-fixture"), 1);
     let value = json_stdout(&output);
@@ -1003,7 +1025,7 @@ fn sigint_while_parent_sync_confirmation_is_slow_is_unknown_without_fallback_wri
         &["--json", "queue", "resend", "doc-fixture"],
     );
     let (output, elapsed) = interrupted_output(child);
-    assert_prompt_cancel(&output, elapsed);
+    assert_unknown_exit(&output, elapsed);
     let records = server.finish();
     assert_eq!(count(&records, "PUT /neocloud/doc-fixture"), 1);
     assert_eq!(count(&records, "GET /neocloud/doc-fixture"), 2);

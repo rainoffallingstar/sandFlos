@@ -195,8 +195,11 @@ fn qr_wait_deadline_does_not_poll_and_pending_cancellation_stops_the_next_poll()
             },
             |_| Ok(()),
             || {
+                // The service checks before creating the challenge, after the
+                // challenge, and after each poll. Allow the first pending poll
+                // to complete, then cancel before the next one starts.
                 checks.set(checks.get() + 1);
-                checks.get() > 1
+                checks.get() > 3
             },
         )
         .unwrap_err();

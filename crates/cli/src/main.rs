@@ -13,34 +13,50 @@ mod queue;
 mod zotero;
 
 use args::{Command, Parsed};
-use error::CliError;
+use error::{CliError, CliErrorCode};
 use std::process::ExitCode;
 
-fn run() -> Result<(), CliError> {
+/// What the run observed: the fully parsed command (when argument parsing
+/// succeeded) and the command result. The command is kept as parsed metadata so
+/// exit-code precedence never depends on rescanning raw argv.
+struct RunOutcome {
+    command: Option<Command>,
+    result: Result<(), CliError>,
+}
+
+fn run() -> RunOutcome {
     let raw = std::env::args().skip(1).collect::<Vec<_>>();
     let json_requested = raw.iter().any(|arg| arg == "--json");
     let parsed = match args::parse(raw) {
         Ok(parsed) => parsed,
         Err(error) => {
             output::emit_error(json_requested, &error);
-            return Err(error);
+            return RunOutcome {
+                command: None,
+                result: Err(error),
+            };
         }
     };
     match parsed {
         Parsed::Help => {
             print!("{}", help::HELP);
-            Ok(())
+            RunOutcome {
+                command: None,
+                result: Ok(()),
+            }
         }
         Parsed::Version => {
             println!("booxctl {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
+            RunOutcome {
+                command: None,
+                result: Ok(()),
+            }
         }
         Parsed::Command {
             options,
             command,
             args,
         } => {
-            cancel::install();
             let result = match command {
                 Command::Auth => auth::run(&options, &args),
                 Command::Push => push::run(&options, &args),
@@ -65,17 +81,33 @@ fn run() -> Result<(), CliError> {
                     );
                 }
             }
-            result
+            RunOutcome {
+                command: Some(command),
+                result,
+            }
         }
     }
 }
 
 fn main() -> ExitCode {
-    let result = run();
+    cancel::install();
+    let outcome = run();
     if cancel::requested() {
-        return ExitCode::from(130);
+        let queue_outcome = match (&outcome.result, outcome.command) {
+            // Queue mutations define their own post-write outcome: a write may
+            // have landed without confirmation, which the documented contract
+            // reports as exit 6 (`unknown`/`partial`). A confirmed queue
+            // success is likewise retained. Every other command keeps the
+            // pre-existing SIGINT contract of exit 130, including push.
+            (Ok(()), Some(Command::Queue)) => true,
+            (Err(error), Some(Command::Queue)) if error.code == CliErrorCode::Partial => true,
+            _ => false,
+        };
+        if !queue_outcome {
+            return ExitCode::from(130);
+        }
     }
-    match result {
+    match outcome.result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => ExitCode::from(error.code.exit_code() as u8),
     }

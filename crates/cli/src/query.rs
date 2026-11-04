@@ -64,7 +64,7 @@ fn transfer_url(options: &GlobalOptions, args: &[String]) -> Result<(), CliError
     let host = device.transfer_host.ok_or_else(|| {
         CliError::new(
             CliErrorCode::Network,
-            "device is not reachable on the local network",
+            "no local transfer address is known for this device",
         )
         .with_stable_code("transfer_url_unavailable")
     })?;

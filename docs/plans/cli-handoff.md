@@ -1,5 +1,7 @@
 # CLI 改造交班记录
 
+> 当前入口（2026-11-04）：发布整改、剩余技术债和人工验收以 [cli-release-execution.md](cli-release-execution.md) 为准；下列旧 SHA、数量、桌面条目和禁止提交说明均为历史，不代表当前 CLI 状态。当前轮用户已授权父 agent 提交代码，真实账号与 tag/release 仍不在授权范围。
+
 
 > **2026-11-01 命名迁移**：命令改名为 `booxctl`（crate/二进制/环境变量 `BOOXCTL_*`/配置目录/钥匙串服务/发布标签 `booxctl-v*`）。本文档中的 `sandflos` 命令与 `SANDFLOS_*` 变量均为历史称呼。
 > **2026-11-01 方向变更（已终止）**：`cli` 分支后续只做纯 CLI，不再接入桌面端（方案 A）。本文档所述桌面切片不再作为本分支待办；未提交的桌面登录会话工作区已撤回并归档在 `/tmp/sandflos-desktop-session-wip`。当前范围与验证见 `tdd-cli-only.md`。以下内容保留为历史记录。

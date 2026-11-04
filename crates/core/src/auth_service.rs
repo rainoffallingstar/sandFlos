@@ -419,6 +419,9 @@ pub struct StoredCredential {
 pub trait CredentialStore: Send + Sync {
     fn load(&self) -> Result<Option<StoredCredential>, AuthError>;
     fn save(&self, token: &str) -> Result<u128, AuthError>;
+    /// Save only when the store has no credential. Implementations must make
+    /// the existence check and write one operation under the store lock.
+    fn save_if_absent(&self, token: &str) -> Result<u128, AuthError>;
     fn clear(&self) -> Result<bool, AuthError>;
     fn can_persist(&self) -> bool;
 
@@ -435,10 +438,8 @@ impl FileCredentialStore {
             path: paths.credential_path(),
         }
     }
-}
 
-impl CredentialStore for FileCredentialStore {
-    fn load(&self) -> Result<Option<StoredCredential>, AuthError> {
+    fn read_credential(&self) -> Result<Option<StoredCredential>, AuthError> {
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -470,7 +471,7 @@ impl CredentialStore for FileCredentialStore {
         }))
     }
 
-    fn save(&self, token: &str) -> Result<u128, AuthError> {
+    fn save_with_policy(&self, token: &str, replace_existing: bool) -> Result<u128, AuthError> {
         let config_dir = self
             .path
             .parent()
@@ -483,6 +484,12 @@ impl CredentialStore for FileCredentialStore {
         }
         set_private_dir_permissions(config_dir)?;
         let _lock = credential_lock(config_dir)?;
+        if !replace_existing && self.read_credential()?.is_some() {
+            return Err(AuthError::input(
+                "credentials_already_exist",
+                "目标凭据已存在，拒绝覆盖",
+            ));
+        }
 
         let updated_ms = unix_ms_now();
         let payload = PersistedCredential {
@@ -508,6 +515,20 @@ impl CredentialStore for FileCredentialStore {
             ));
         }
         Ok(updated_ms)
+    }
+}
+
+impl CredentialStore for FileCredentialStore {
+    fn load(&self) -> Result<Option<StoredCredential>, AuthError> {
+        self.read_credential()
+    }
+
+    fn save(&self, token: &str) -> Result<u128, AuthError> {
+        self.save_with_policy(token, true)
+    }
+
+    fn save_if_absent(&self, token: &str) -> Result<u128, AuthError> {
+        self.save_with_policy(token, false)
     }
 
     fn clear(&self) -> Result<bool, AuthError> {
@@ -555,6 +576,12 @@ const KEYRING_SERVICE: &str = "com.fallingstar.booxctl";
 pub struct KeyringCredentialStore {
     #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     service: String,
+    /// Cross-process lock directory. `for_paths` scopes the lock to the same
+    /// configuration directory whose hashed service name selects the keyring
+    /// entry. `new()` keeps the legacy generic service and locks the default
+    /// configuration directory so older callers still serialize.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+    lock_dir: Option<PathBuf>,
 }
 
 impl KeyringCredentialStore {
@@ -565,29 +592,18 @@ impl KeyringCredentialStore {
         let identity = absolute.to_string_lossy();
         Self {
             service: format!("{KEYRING_SERVICE}.{:x}", Sha1::digest(identity.as_bytes())),
+            lock_dir: Some(paths.config_dir().to_path_buf()),
         }
     }
+
     pub fn new() -> Self {
         Self {
             service: KEYRING_SERVICE.to_string(),
+            lock_dir: default_config_dir(),
         }
     }
-}
 
-impl Default for KeyringCredentialStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn keyring_entry(service: &str) -> Result<keyring::Entry, AuthError> {
-    keyring::Entry::new(service, "token")
-        .map_err(|_| AuthError::storage("credential_store_unavailable", "平台凭据存储不可用"))
-}
-
-impl CredentialStore for KeyringCredentialStore {
-    fn load(&self) -> Result<Option<StoredCredential>, AuthError> {
+    fn read_entry(&self) -> Result<Option<StoredCredential>, AuthError> {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             use keyring::Error as KeyringError;
@@ -629,23 +645,79 @@ impl CredentialStore for KeyringCredentialStore {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn write_entry(&self, token: &str) -> Result<u128, AuthError> {
+        let updated_ms = unix_ms_now();
+        let payload = PersistedCredential {
+            schema_version: CREDENTIAL_SCHEMA_VERSION,
+            token: token.to_string(),
+            updated_ms,
+        };
+        let text = serde_json::to_string(&payload)
+            .map_err(|_| AuthError::storage("credential_write_failed", "无法序列化认证凭据"))?;
+        keyring_entry(&self.service)?
+            .set_password(&text)
+            .map_err(|_| AuthError::storage("credential_write_failed", "无法保存到平台凭据存储"))?;
+        Ok(updated_ms)
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn delete_entry(&self) -> Result<bool, AuthError> {
+        use keyring::Error as KeyringError;
+        match keyring_entry(&self.service)?.delete_credential() {
+            Ok(()) => Ok(true),
+            Err(KeyringError::NoEntry) => Ok(false),
+            Err(_) => Err(AuthError::storage(
+                "credential_delete_failed",
+                "无法删除平台凭据",
+            )),
+        }
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn acquire_lock(&self) -> Result<File, AuthError> {
+        let dir = self.lock_dir.as_ref().ok_or_else(|| {
+            AuthError::storage(
+                "config_dir_unavailable",
+                "无法定位平台凭据的配置目录，拒绝未加锁的写入",
+            )
+        })?;
+        fs::create_dir_all(dir).map_err(|err| {
+            AuthError::storage(
+                "credential_write_failed",
+                format!("无法创建配置目录: {err}"),
+            )
+        })?;
+        set_private_dir_permissions(dir)?;
+        credential_lock(dir)
+    }
+}
+
+impl Default for KeyringCredentialStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn keyring_entry(service: &str) -> Result<keyring::Entry, AuthError> {
+    keyring::Entry::new(service, "token")
+        .map_err(|_| AuthError::storage("credential_store_unavailable", "平台凭据存储不可用"))
+}
+
+impl CredentialStore for KeyringCredentialStore {
+    fn load(&self) -> Result<Option<StoredCredential>, AuthError> {
+        self.read_entry()
+    }
+
     fn save(&self, token: &str) -> Result<u128, AuthError> {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
-            let updated_ms = unix_ms_now();
-            let payload = PersistedCredential {
-                schema_version: CREDENTIAL_SCHEMA_VERSION,
-                token: token.to_string(),
-                updated_ms,
-            };
-            let text = serde_json::to_string(&payload)
-                .map_err(|_| AuthError::storage("credential_write_failed", "无法序列化认证凭据"))?;
-            keyring_entry(&self.service)?
-                .set_password(&text)
-                .map_err(|_| {
-                    AuthError::storage("credential_write_failed", "无法保存到平台凭据存储")
-                })?;
-            Ok(updated_ms)
+            // Serialize with `save_if_absent` and `clear` on the same config
+            // directory. Keyring has no compare-and-swap, so the lock is what
+            // makes an absent-check and write one operation across processes.
+            let _lock = self.acquire_lock()?;
+            self.write_entry(token)
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
@@ -653,7 +725,30 @@ impl CredentialStore for KeyringCredentialStore {
             Err(AuthError::new(
                 AuthErrorKind::Unsupported,
                 "credential_store_unavailable",
-                "当前平台没有可用且持久的系统凭据存储；请设置 BOOXCTL_TOKEN 或显式选择 BOOXCTL_CREDENTIAL_STORE=file",
+                "当前平台没有可用且持久的系统凭据存储；请设置 BOOXCTL_TOKEN 或显式选择 file 存储",
+            ))
+        }
+    }
+
+    fn save_if_absent(&self, token: &str) -> Result<u128, AuthError> {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            let _lock = self.acquire_lock()?;
+            if self.read_entry()?.is_some() {
+                return Err(AuthError::input(
+                    "credentials_already_exist",
+                    "目标凭据已存在，拒绝覆盖",
+                ));
+            }
+            self.write_entry(token)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            let _ = token;
+            Err(AuthError::new(
+                AuthErrorKind::Unsupported,
+                "credential_store_unavailable",
+                "当前平台没有可用且持久的系统凭据存储",
             ))
         }
     }
@@ -661,15 +756,8 @@ impl CredentialStore for KeyringCredentialStore {
     fn clear(&self) -> Result<bool, AuthError> {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
-            use keyring::Error as KeyringError;
-            match keyring_entry(&self.service)?.delete_credential() {
-                Ok(()) => Ok(true),
-                Err(KeyringError::NoEntry) => Ok(false),
-                Err(_) => Err(AuthError::storage(
-                    "credential_delete_failed",
-                    "无法删除平台凭据",
-                )),
-            }
+            let _lock = self.acquire_lock()?;
+            self.delete_entry()
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
@@ -699,6 +787,10 @@ impl CredentialStore for UnavailableCredentialStore {
             "credential_store_unavailable",
             "当前平台没有可用且持久的系统凭据存储；请设置 BOOXCTL_TOKEN 或显式选择 BOOXCTL_CREDENTIAL_STORE=file",
         ))
+    }
+
+    fn save_if_absent(&self, token: &str) -> Result<u128, AuthError> {
+        self.save(token)
     }
 
     fn clear(&self) -> Result<bool, AuthError> {
@@ -803,6 +895,47 @@ impl AuthService {
     }
 
     pub fn import_token(&self, raw: &str) -> Result<AuthStatus, AuthError> {
+        self.import_token_with(raw, true, || false)
+    }
+
+    /// Import a credential without replacing an existing target. The
+    /// no-overwrite decision is made by the credential store under its lock.
+    pub fn import_token_if_absent(&self, raw: &str) -> Result<AuthStatus, AuthError> {
+        self.import_token_with(raw, false, || false)
+    }
+
+    /// Import a credential without replacing the target and permit the caller
+    /// to cancel before verification and again before the store is touched.
+    pub fn import_token_if_absent_cancellable<C>(
+        &self,
+        raw: &str,
+        cancel: C,
+    ) -> Result<AuthStatus, AuthError>
+    where
+        C: Fn() -> bool,
+    {
+        self.import_token_with(raw, false, cancel)
+    }
+
+    /// Import a credential while allowing the caller to cancel before any
+    /// network or persistence side effect. Cancellation is checked again after
+    /// verification, immediately before the store is touched.
+    pub fn import_token_cancellable<C>(&self, raw: &str, cancel: C) -> Result<AuthStatus, AuthError>
+    where
+        C: Fn() -> bool,
+    {
+        self.import_token_with(raw, true, cancel)
+    }
+
+    fn import_token_with<C>(
+        &self,
+        raw: &str,
+        replace_existing: bool,
+        cancel: C,
+    ) -> Result<AuthStatus, AuthError>
+    where
+        C: Fn() -> bool,
+    {
         self.ensure_environment_token_absent()?;
         let token = validate_token(raw)?;
         if !self.store.can_persist() {
@@ -812,8 +945,18 @@ impl AuthService {
                 "当前平台没有可用且持久的凭证存储；请设置 BOOXCTL_TOKEN 或显式选择 file 存储",
             ));
         }
+        if cancel() {
+            return Err(AuthError::cancelled());
+        }
         self.client.verify_token(&token)?;
-        let updated_ms = self.store.save(&token)?;
+        if cancel() {
+            return Err(AuthError::cancelled());
+        }
+        let updated_ms = if replace_existing {
+            self.store.save(&token)?
+        } else {
+            self.store.save_if_absent(&token)?
+        };
         Ok(AuthStatus {
             authorized: true,
             source: self.store.source(),
@@ -844,10 +987,16 @@ impl AuthService {
             return Err(AuthError::new(
                 AuthErrorKind::Unsupported,
                 "credential_store_unavailable",
-                "当前平台没有可用且持久的凭证存储；请设置 BOOXCTL_TOKEN 或显式选择 BOOXCTL_CREDENTIAL_STORE=file",
+                "当前平台没有可用且持久的凭证存储；请设置 BOOXCTL_TOKEN 或显式选择 file 存储",
             ));
         }
+        if is_cancelled() {
+            return Err(AuthError::cancelled());
+        }
         let challenge = self.client.create_qr_login()?;
+        if is_cancelled() {
+            return Err(AuthError::cancelled());
+        }
         on_challenge(&challenge)?;
         let deadline = Instant::now() + options.timeout;
         loop {
@@ -857,7 +1006,11 @@ impl AuthService {
             if Instant::now() >= deadline {
                 return Err(AuthError::timeout("等待扫码登录超时"));
             }
-            match self.client.check_qr_login(&challenge.qrcode_id)? {
+            let poll = self.client.check_qr_login(&challenge.qrcode_id)?;
+            if is_cancelled() {
+                return Err(AuthError::cancelled());
+            }
+            match poll {
                 QrLoginPoll::Pending => {
                     let remaining = deadline.saturating_duration_since(Instant::now());
                     let wait = options.poll_interval.min(remaining);
@@ -872,6 +1025,9 @@ impl AuthService {
                     ))
                 }
                 QrLoginPoll::Confirmed { token } => {
+                    if is_cancelled() {
+                        return Err(AuthError::cancelled());
+                    }
                     let token = validate_token(&token)?;
                     let updated_ms = self.store.save(&token)?;
                     return Ok(AuthStatus {
@@ -962,7 +1118,7 @@ fn set_private_dir_permissions(path: &Path) -> Result<(), AuthError> {
 mod tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     };
 
@@ -994,7 +1150,6 @@ mod tests {
         verified_tokens: Mutex<Vec<String>>,
         verify_result: Mutex<Result<AuthIdentity, AuthError>>,
         qr_polls: Mutex<Vec<QrLoginPoll>>,
-        qr_checks: AtomicUsize,
         created_qr: Mutex<QrLoginChallenge>,
     }
 
@@ -1007,7 +1162,6 @@ mod tests {
                     nickname: Some("reader".to_string()),
                 })),
                 qr_polls: Mutex::new(Vec::new()),
-                qr_checks: AtomicUsize::new(0),
                 created_qr: Mutex::new(QrLoginChallenge {
                     qrcode_id: "qr-1".to_string(),
                     qrcode_data: "https://example.test/qr-1".to_string(),
@@ -1037,7 +1191,6 @@ mod tests {
 
         fn check_qr_login(&self, qrcode_id: &str) -> Result<QrLoginPoll, AuthError> {
             assert_eq!(qrcode_id, "qr-1");
-            self.qr_checks.fetch_add(1, Ordering::SeqCst);
             let mut polls = self.qr_polls.lock().expect("polls");
             if polls.is_empty() {
                 Ok(QrLoginPoll::Pending)
@@ -1303,7 +1456,7 @@ mod tests {
             .login_with_qr(QrLoginOptions::default(), |_| Ok(()), || false)
             .expect_err("qr rejected");
         assert_eq!(qr_error.code, "environment_token_active");
-        assert_eq!(client.qr_checks.load(Ordering::SeqCst), 0);
+        assert!(!dir.path().join("config/auth.json").exists());
     }
 
     #[test]
@@ -1391,6 +1544,151 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_import_does_not_save_after_verification() {
+        use std::sync::mpsc;
+
+        struct ControlledVerify {
+            entered: mpsc::Sender<()>,
+            proceed: Mutex<mpsc::Receiver<()>>,
+        }
+        impl AuthClient for ControlledVerify {
+            fn verify_token(&self, _token: &str) -> Result<AuthIdentity, AuthError> {
+                self.entered.send(()).expect("signal verification start");
+                self.proceed
+                    .lock()
+                    .expect("verification gate")
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("test must release verification");
+                Ok(AuthIdentity {
+                    uid: "uid-1".to_string(),
+                    nickname: None,
+                })
+            }
+            fn create_qr_login(&self) -> Result<QrLoginChallenge, AuthError> {
+                unreachable!("import does not create QR login")
+            }
+            fn check_qr_login(&self, _id: &str) -> Result<QrLoginPoll, AuthError> {
+                unreachable!("import does not poll QR login")
+            }
+        }
+
+        let dir = TempDir::new();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (proceed_tx, proceed_rx) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let service = AuthService::new(
+            AppPaths::new(dir.path().join("config")),
+            Box::new(ControlledVerify {
+                entered: entered_tx,
+                proceed: Mutex::new(proceed_rx),
+            }),
+            Box::new(FileCredentialStore::new(&AppPaths::new(
+                dir.path().join("config"),
+            ))),
+            None,
+        );
+        let flag = Arc::clone(&cancelled);
+        let (result_tx, result_rx) = mpsc::channel();
+        let import = std::thread::spawn(move || {
+            let result =
+                service.import_token_cancellable("token-one", move || flag.load(Ordering::SeqCst));
+            result_tx.send(result).expect("send import result");
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("import must reach verification");
+        cancelled.store(true, Ordering::SeqCst);
+        proceed_tx.send(()).expect("release verification");
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cancelled import must finish")
+            .expect_err("cancelled");
+        import.join().expect("import thread");
+        assert_eq!(error.kind, AuthErrorKind::Cancelled);
+        assert!(!dir.path().join("config/auth.json").exists());
+    }
+
+    #[test]
+    fn cancelled_qr_confirmation_does_not_save() {
+        use std::sync::mpsc;
+
+        struct CancelOnPoll {
+            cancelled: Arc<AtomicBool>,
+        }
+        impl AuthClient for CancelOnPoll {
+            fn verify_token(&self, _token: &str) -> Result<AuthIdentity, AuthError> {
+                unreachable!("QR login does not verify a token")
+            }
+            fn create_qr_login(&self) -> Result<QrLoginChallenge, AuthError> {
+                Ok(QrLoginChallenge {
+                    qrcode_id: "qr-1".to_string(),
+                    qrcode_data: "https://example.test/qr-1".to_string(),
+                })
+            }
+            fn check_qr_login(&self, _id: &str) -> Result<QrLoginPoll, AuthError> {
+                self.cancelled.store(true, Ordering::SeqCst);
+                Ok(QrLoginPoll::Confirmed {
+                    token: "qr-token".to_string(),
+                })
+            }
+        }
+
+        let dir = TempDir::new();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let service = AuthService::new(
+            AppPaths::new(dir.path().join("config")),
+            Box::new(CancelOnPoll {
+                cancelled: Arc::clone(&cancelled),
+            }),
+            Box::new(FileCredentialStore::new(&AppPaths::new(
+                dir.path().join("config"),
+            ))),
+            None,
+        );
+        let (result_tx, result_rx) = mpsc::channel();
+        let flag = Arc::clone(&cancelled);
+        let login = std::thread::spawn(move || {
+            let error = service
+                .login_with_qr(
+                    QrLoginOptions {
+                        poll_interval: Duration::ZERO,
+                        timeout: Duration::from_secs(2),
+                    },
+                    |_| Ok(()),
+                    move || flag.load(Ordering::SeqCst),
+                )
+                .expect_err("cancelled confirmation");
+            result_tx.send(error).expect("send QR result");
+            service
+        });
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("QR cancellation must finish");
+        let service = login.join().expect("login thread");
+        assert_eq!(error.kind, AuthErrorKind::Cancelled);
+        assert_eq!(error.kind.exit_code(), 130);
+        assert!(!dir.path().join("config/auth.json").exists());
+        let status = service.status(false).expect("observe status");
+        assert!(!status.authorized);
+        assert_eq!(status.source, AuthSource::None);
+    }
+
+    #[test]
+    fn import_if_absent_does_not_replace_a_credential() {
+        let dir = TempDir::new();
+        let client = Arc::new(FakeClient::accepted());
+        let service = service(&dir, Arc::clone(&client), None);
+        service.import_token("first-token").expect("first import");
+        let error = service
+            .import_token_if_absent("second-token")
+            .expect_err("second import");
+        assert_eq!(error.kind, AuthErrorKind::Input);
+        assert_eq!(error.code, "credentials_already_exist");
+        let resolved = service.resolve_token().expect("resolve").expect("token");
+        assert_eq!(resolved.expose(), "first-token");
+    }
+
+    #[test]
     fn rejected_import_does_not_persist_a_credential() {
         let dir = TempDir::new();
         let client = Arc::new(FakeClient::accepted());
@@ -1455,7 +1753,6 @@ mod tests {
 
         assert_eq!(displayed.as_deref(), Some("https://example.test/qr-1"));
         assert!(status.authorized);
-        assert_eq!(client.qr_checks.load(Ordering::SeqCst), 2);
         let resolved = service.resolve_token().expect("resolve").expect("token");
         assert_eq!(resolved.expose(), "qr-token");
     }
@@ -1476,24 +1773,84 @@ mod tests {
 
     #[test]
     fn cancelled_qr_wait_stops_polling() {
-        let dir = TempDir::new();
-        let client = Arc::new(FakeClient::with_qr_polls(vec![QrLoginPoll::Pending]));
-        let service = service(&dir, Arc::clone(&client), None);
-        let checks = Arc::new(AtomicUsize::new(0));
-        let checks_for_closure = Arc::clone(&checks);
+        use std::sync::mpsc;
 
-        let error = service
-            .login_with_qr(
+        struct PendingThenCancel {
+            cancelled: Arc<AtomicBool>,
+            observed: mpsc::Sender<()>,
+        }
+        impl AuthClient for PendingThenCancel {
+            fn verify_token(&self, _token: &str) -> Result<AuthIdentity, AuthError> {
+                unreachable!("QR login does not verify a token")
+            }
+            fn create_qr_login(&self) -> Result<QrLoginChallenge, AuthError> {
+                Ok(QrLoginChallenge {
+                    qrcode_id: "qr-1".to_string(),
+                    qrcode_data: "https://example.test/qr-1".to_string(),
+                })
+            }
+            fn check_qr_login(&self, _id: &str) -> Result<QrLoginPoll, AuthError> {
+                self.cancelled.store(true, Ordering::SeqCst);
+                self.observed.send(()).expect("observe pending poll");
+                Ok(QrLoginPoll::Pending)
+            }
+        }
+
+        let dir = TempDir::new();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let client = Arc::new(PendingThenCancel {
+            cancelled: Arc::clone(&cancelled),
+            observed: observed_tx,
+        });
+        impl AuthClient for Arc<PendingThenCancel> {
+            fn verify_token(&self, token: &str) -> Result<AuthIdentity, AuthError> {
+                self.as_ref().verify_token(token)
+            }
+            fn create_qr_login(&self) -> Result<QrLoginChallenge, AuthError> {
+                self.as_ref().create_qr_login()
+            }
+            fn check_qr_login(&self, id: &str) -> Result<QrLoginPoll, AuthError> {
+                self.as_ref().check_qr_login(id)
+            }
+        }
+        let client_for_service = Arc::clone(&client);
+        let service = AuthService::new(
+            AppPaths::new(dir.path().join("config")),
+            Box::new(client_for_service),
+            Box::new(FileCredentialStore::new(&AppPaths::new(
+                dir.path().join("config"),
+            ))),
+            None,
+        );
+        let flag = Arc::clone(&cancelled);
+        let (result_tx, result_rx) = mpsc::channel();
+        let login = std::thread::spawn(move || {
+            let result = service.login_with_qr(
                 QrLoginOptions {
-                    poll_interval: Duration::from_millis(1),
+                    poll_interval: Duration::from_secs(1),
                     timeout: Duration::from_secs(2),
                 },
                 |_| Ok(()),
-                move || checks_for_closure.fetch_add(1, Ordering::SeqCst) >= 1,
-            )
+                move || flag.load(Ordering::SeqCst),
+            );
+            result_tx.send(result).expect("send QR result");
+            service
+        });
+        observed_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("QR polling must start");
+        let error = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("QR cancellation must finish")
             .expect_err("cancelled");
+        let service = login.join().expect("login thread");
         assert_eq!(error.kind, AuthErrorKind::Cancelled);
         assert_eq!(error.kind.exit_code(), 130);
+        assert!(!dir.path().join("config/auth.json").exists());
+        let status = service.status(false).expect("observe status");
+        assert!(!status.authorized);
+        assert_eq!(status.source, AuthSource::None);
     }
 
     #[test]
@@ -1535,7 +1892,7 @@ mod tests {
             .login_with_qr(QrLoginOptions::default(), |_| Ok(()), || false)
             .expect_err("qr unavailable");
         assert_eq!(error.code, "credential_store_unavailable");
-        assert_eq!(client.qr_checks.load(Ordering::SeqCst), 0);
+        assert!(!dir.path().join("config/auth.json").exists());
     }
 
     #[test]

@@ -5,10 +5,11 @@ use serde_json::Value;
 use std::os::windows::process::CommandExt;
 use std::{
     collections::{HashMap, HashSet},
+    io::Read,
     net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpStream, UdpSocket},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 use uuid::Uuid;
@@ -162,7 +163,14 @@ pub fn build_dashboard_devices_pure(
     build_dashboard_devices_with_environment(raw, share_devices, &[], &HashMap::new())
 }
 
-fn build_dashboard_devices_with_environment(
+/// Maps cloud device records using explicit local network evidence.
+///
+/// `local_probe_ips` are the host's local IPv4 addresses and
+/// `neighbors` maps normalized MAC addresses to IPv4 addresses observed in the
+/// ARP table. Keeping this mapping pure lets callers and tests reuse the exact
+/// production projection without probing interfaces or starting a device
+/// discovery connection.
+pub fn build_dashboard_devices_with_environment(
     raw: Value,
     share_devices: Vec<ShareTransferDevice>,
     local_probe_ips: &[Ipv4Addr],
@@ -245,7 +253,10 @@ fn build_dashboard_devices_with_environment(
 
         let transfer_host = transfer_host.or_else(|| {
             if same_lan {
-                api_ip.as_ref().map(|ip| format!("http://{ip}"))
+                arp_ip
+                    .as_ref()
+                    .or(api_ip.as_ref())
+                    .map(|ip| format!("http://{ip}"))
             } else {
                 None
             }
@@ -362,18 +373,84 @@ pub fn extract_device_ip(item: &Value) -> Option<String> {
     .find_map(|key| json_field_to_string(item, key))
 }
 
-#[cfg(target_os = "windows")]
-fn command_output(program: &str, args: &[&str]) -> Option<Output> {
-    Command::new(program)
-        .args(args)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()
-}
+const COMMAND_WAIT_LIMIT: Duration = Duration::from_secs(2);
+const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
+const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-#[cfg(not(target_os = "windows"))]
+// Capture in private files so inherited pipes cannot keep a reader thread alive.
+struct CommandCapture(std::path::PathBuf);
+impl Drop for CommandCapture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 fn command_output(program: &str, args: &[&str]) -> Option<Output> {
-    Command::new(program).args(args).output().ok()
+    use std::fs::{File, OpenOptions};
+    use std::io::{Seek, SeekFrom};
+    let path = std::env::temp_dir().join(format!("booxctl-probe-{}", Uuid::new_v4()));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path).ok()?;
+    let capture = CommandCapture(path);
+    let open = |name: &str| -> std::io::Result<File> {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(capture.0.join(name))
+    };
+    let mut stdout = open("stdout").ok()?;
+    let mut stderr = open("stderr").ok()?;
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone().ok()?)
+        .stderr(stderr.try_clone().ok()?);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command.spawn().ok()?;
+    let deadline = Instant::now() + COMMAND_WAIT_LIMIT;
+    let status = loop {
+        let oversized = [&stdout, &stderr].iter().any(|f| {
+            f.metadata()
+                .map_or(true, |m| m.len() > COMMAND_OUTPUT_LIMIT as u64)
+        });
+        if oversized || Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(COMMAND_POLL_INTERVAL),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let read = |file: &mut File| -> Option<Vec<u8>> {
+        file.seek(SeekFrom::Start(0)).ok()?;
+        let mut bytes = Vec::new();
+        file.take(COMMAND_OUTPUT_LIMIT as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (bytes.len() <= COMMAND_OUTPUT_LIMIT).then_some(bytes)
+    };
+    Some(Output {
+        status,
+        stdout: read(&mut stdout)?,
+        stderr: read(&mut stderr)?,
+    })
 }
 
 #[cfg(target_os = "windows")]

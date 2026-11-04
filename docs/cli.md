@@ -21,7 +21,7 @@ SIGINT 可中断 push 中正在等待的认证、配额、bucket、STS、签名�
 
 `--config-dir` / `BOOXCTL_CONFIG_DIR` 选择独立配置目录。`BOOXCTL_TOKEN` 为进程级输入，不自动保存；不要把真实 token 放在命令行参数中。默认使用 macOS Keychain / Windows Credential Manager；Linux 等没有持久后端的环境会明确报错，此时使用 `BOOXCTL_TOKEN`，或显式设置 `BOOXCTL_CREDENTIAL_STORE=file` 以启用 0600 权限的本地凭据文件。CLI 使用独立配置目录。
 
-`auth import` 会先调用用户接口验证 token，只有验证通过才保存。凭据被拒时退出 3 且不写文件；网络失败退出 4，原凭据保持不变。`auth status` 默认只检查本地凭据，加 `--verify` 才会访问网络。
+`auth import` 会先调用用户接口验证 token，只有验证通过才保存。凭据被拒时退出 3 且不写文件；网络失败退出 4，原凭据保持不变。`auth status` 默认只检查本地凭据，加 `--verify` 才会访问网络。导入期间收到 SIGINT 会返回 `cancelled`、退出 130，并在验证返回后、写盘前再次检查取消；未关闭的 stdin 不会阻止退出。扫码登录也会在确认后、保存前检查取消。
 
 ## 开发验证
 
@@ -102,7 +102,7 @@ booxctl auth import --token-stdin < ~/.secrets/boox-token
 booxctl --json auth status --verify
 ```
 
-`auth import` 写入前会调用用户接口验证 token：被拒退出 3 且不落盘；网络失败退出 4，原凭据保持不变。`BOOXCTL_TOKEN` 生效时，导入和扫码都会被拒绝，避免新凭据被环境变量遮蔽。
+`auth import` 写入前会调用用户接口验证 token，验证通过后、写入前若收到 SIGINT 同样退出 130 且不保存：被拒退出 3 且不落盘；网络失败退出 4，原凭据保持不变。`BOOXCTL_TOKEN` 生效时，导入和扫码都会被拒绝，避免新凭据被环境变量遮蔽。
 
 ### 3. 校验安装
 
@@ -137,7 +137,7 @@ booxctl zotero webdav configure --url https://dav.example.org/remote.php/dav \
 booxctl zotero push --attachment-id 4
 ```
 
-WebDAV 要求 HTTPS（回环地址除外），下载的附件在推送结束后清理。
+WebDAV 要求 HTTPS（回环地址除外），下载的附件在推送结束后清理。已保存的 WebDAV 密码无法读取或解码时，`zotero list` 不会把远程附件标为可下载，`zotero push` 会在建立连接前返回本地错误。`zotero push` 在等待 WebDAV 响应头或响应体期间收到 SIGINT 会退出 130、错误码 `cancelled`，不启动上传，也不会遗留下载临时目录；已经进入的阻塞系统调用仍可能等到返回。
 
 ### 6. 脚本化与中断
 
@@ -163,7 +163,7 @@ booxctl --json push ./big.pdf; echo "exit=$?"
 | | `resend ID` | 重推一条记录 |
 | | `delete ID --yes` | 删除记录，必须显式确认 |
 | `devices` | `list` | 列出设备 |
-| | `transfer-url ID` | 输出该设备的局域网互传地址 |
+| | `transfer-url ID` | 输出已知的局域网候选互传地址；未探测设备服务是否在线 |
 | `storage` | `status` | 云空间用量 |
 | `reading` | `stats --date YYYY-MM-DD` | 指定日期的阅读统计 |
 | `calibre` | `configure --library PATH...` | 配置一个或多个书库 |
@@ -212,6 +212,8 @@ booxctl diagnostics
 
 `--verbose` 在命令失败时向 stderr 追加一行稳定错误分类与退出码，stdout 的 JSON 对象不受影响。
 
+`devices transfer-url ID` 返回的是本机根据云端设备记录、局域网发现或 ARP 邻居得到的候选地址，不是对设备服务可达性的探测结果。找不到本地候选地址时退出 4，稳定错误码为 `transfer_url_unavailable`；返回的地址仍须由设备端实际接收验收确认。
+
 `reading stats --date` 的日期原样作为服务端统计参数传递，不随运行机器的时区换日。当前尚未确认上游统计时区，因此 JSON 明确返回 `timezone: null`，文本返回 `timezone=unspecified`；CLI 不将它解释为本地时间或 UTC。上游缺失的统计保持 `null`，不会补成零。
 
 `auth login --qr` 需要交互终端；JSON、重定向和 `--no-input` 模式请使用 token。环境中的 `BOOXCTL_TOKEN` 优先于磁盘凭据，在该变量生效时导入和扫码会被拒绝，避免新凭据被遮蔽。`auth logout` 只能清除 CLI 保存的凭据，不能撤销外部环境提供的 token。
@@ -249,6 +251,6 @@ macOS 用 `shasum -a 256 -c` 校验对应 ARM64 包；解压后将 `booxctl` 放
 - 文件凭据后端：先备份旧 CLI 目录；可用 `BOOXCTL_CONFIG_DIR` 指向原目录并显式选择 `BOOXCTL_CREDENTIAL_STORE=file`，复用原 CLI 的 `auth.json`、书库配置及 `webdav/auth.json`。这会继续使用原目录，不是自动复制。先用离线 `auth status` 检查，再按需 `auth status --verify`。
 - 钥匙串后端：即使配置目录相同，旧 service 的 BOOX token / WebDAV 密码也不会被新 service 读取。使用 `auth login --qr` 或 `auth import --token-stdin` 重新登录，再重新执行 `zotero webdav configure`；不要把密码或 token 放在 argv。旧钥匙串条目保留，由用户确认后自行处理。
 - 新配置目录：重新运行 `calibre configure`、`zotero configure` 和必要的 WebDAV 配置。源书库只读，不会迁移或修改图书。
-- `config migrate --from` 面向旧桌面的 `auth_cache.json`，仅导入经验证的 token，不负责迁移整个旧 CLI 目录或钥匙串；源文件保留，目标已有凭据时拒绝覆盖。
+- `config migrate --from` 面向旧桌面的 `auth_cache.json`，仅导入经验证的 token，不负责迁移整个旧 CLI 目录或钥匙串；源文件保留，目标已有凭据时拒绝覆盖。文件后端在持锁状态下重新检查目标并写入，因此两个并发迁移只有一个能成功；另一个返回 `credentials_already_exist`（若恰好撞上写锁则返回 `credential_store_busy`），两者都不会声称迁移成功。钥匙串在 macOS/Windows 上只能做写入前重检，无法提供同等强度的原子比较写入。
 
 不支持自动读取旧环境变量作为回退，避免不知情地使用另一个账号。

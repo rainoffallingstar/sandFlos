@@ -1,5 +1,7 @@
 # GitHub 构建状态核对
 
+> 当前入口（2026-11-04）：发布整改、剩余技术债和人工验收以 [cli-release-execution.md](cli-release-execution.md) 为准；下列旧 SHA、数量、桌面条目和禁止提交说明均为历史，不代表当前 CLI 状态。当前轮用户已授权父 agent 提交代码，真实账号与 tag/release 仍不在授权范围。
+
 2026-10-31：用户最新明确允许父提交代码，已将此前七片已验收改动提交为 `d3810d0fb5d9646bd18b49da8535a0c6c5cd52bc` 并发布到远端cli。Git HTTPS连接github.com:443失败；父经GitHub Git Data API发布相同blob/tree/commit SHA并非强制更新ref，远端API已核实相同SHA，没有改写历史。
 
 对应run **41190025958，7/7 success**：Linux/macOS/Windows CLI三项、下载产物原生运行三项、macOS desktop-compatibility一项。覆盖的是d3810d0。该 run 的 desktop-compatibility 一项已随纯 CLI 方向移除，仅作历史。

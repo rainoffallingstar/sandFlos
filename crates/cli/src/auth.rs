@@ -129,17 +129,123 @@ fn import(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if args != ["--token-stdin"] {
         return Err(CliError::usage("usage: booxctl auth import --token-stdin"));
     }
-    let mut raw = String::new();
-    io::stdin().read_to_string(&mut raw).map_err(|err| {
-        CliError::new(
-            crate::error::CliErrorCode::LocalIo,
-            format!("cannot read token from stdin: {err}"),
-        )
-    })?;
+    let raw = read_secret_from_stdin("token")?;
     let status = service(options)?
-        .import_token(&raw)
+        .import_token_cancellable(&raw, crate::cancel::requested)
         .map_err(CliError::from_auth)?;
     emit_status(options.json, &status)
+}
+
+/// Read a secret from stdin without waiting for EOF after cancellation.
+///
+/// A terminal-less importer may receive its secret without EOF while the
+/// writer stays open. On Unix, the descriptor is made nonblocking only for the
+/// duration of the read; an RAII guard restores the inherited flags even on
+/// every error path and on panic.
+pub(crate) fn read_secret_from_stdin(kind: &str) -> Result<String, CliError> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let stdin = io::stdin();
+        let fd = stdin.as_raw_fd();
+        // The guard is returned even when the descriptor was already
+        // nonblocking. Its drop restores the same flags, so the descriptor's
+        // inherited state is preserved without changing the read loop.
+        let _guard = NonblockingStdin::install(fd, kind)?;
+        let mut raw = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            if crate::cancel::requested() {
+                return Err(CliError::from_auth(AuthError::cancelled()));
+            }
+            match stdin.lock().read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => raw.extend_from_slice(&buffer[..count]),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                Err(err) => return Err(stdin_read_error(kind, err)),
+            }
+        }
+        std::str::from_utf8(&raw)
+            .map(str::to_owned)
+            .map_err(|_| stdin_utf8_error(kind))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut raw = Vec::new();
+        io::stdin()
+            .read_to_end(&mut raw)
+            .map_err(|err| stdin_read_error(kind, err))?;
+        std::str::from_utf8(&raw)
+            .map(str::to_owned)
+            .map_err(|_| stdin_utf8_error(kind))
+    }
+}
+
+fn stdin_read_error(kind: &str, err: io::Error) -> CliError {
+    CliError::new(
+        crate::error::CliErrorCode::LocalIo,
+        format!("cannot read {kind} from stdin: {err}"),
+    )
+}
+
+fn stdin_utf8_error(kind: &str) -> CliError {
+    CliError::new(
+        crate::error::CliErrorCode::LocalIo,
+        format!("cannot read {kind} from stdin: input is not UTF-8"),
+    )
+}
+
+#[cfg(unix)]
+struct NonblockingStdin {
+    fd: std::os::fd::RawFd,
+    original_flags: std::os::raw::c_int,
+}
+
+#[cfg(unix)]
+impl NonblockingStdin {
+    fn install(fd: std::os::fd::RawFd, kind: &str) -> Result<Self, CliError> {
+        use std::os::raw::c_int;
+        extern "C" {
+            fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+        }
+        const F_GETFL: c_int = 3;
+        const F_SETFL: c_int = 4;
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        const O_NONBLOCK: c_int = 0o4000;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        const O_NONBLOCK: c_int = 0x4;
+
+        let flags = unsafe { fcntl(fd, F_GETFL) };
+        if flags < 0 {
+            return Err(stdin_read_error(kind, io::Error::last_os_error()));
+        }
+        if flags & O_NONBLOCK == 0 && unsafe { fcntl(fd, F_SETFL, flags | O_NONBLOCK) } < 0 {
+            return Err(stdin_read_error(kind, io::Error::last_os_error()));
+        }
+        Ok(Self {
+            fd,
+            original_flags: flags,
+        })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for NonblockingStdin {
+    fn drop(&mut self) {
+        use std::os::raw::c_int;
+        extern "C" {
+            fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+        }
+        const F_SETFL: c_int = 4;
+        // Best effort: the descriptor belongs to the process and is about to be
+        // released. A failure here cannot be reported through a `Drop`.
+        unsafe {
+            let _ = fcntl(self.fd, F_SETFL, self.original_flags);
+        }
+    }
 }
 
 fn status(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {

@@ -45,7 +45,14 @@ with unknown semantics, and explicit dashboard refresh input/errors are done.
 The desktop refresh *app wiring* is out of scope now; the core
 `DashboardRefreshInput` / strict-error API stays.
 
-## Current state
+## Current round (2026-11-04)
+
+- Current release remediation and manual gates: `docs/plans/cli-release-execution.md`.
+- Parent is authorized to commit/push CLI fixes; child agents never commit.
+- Real accounts, credentials, books, tags and releases remain outside this round.
+- Earlier state below is historical; verify HEAD and CI by exact SHA each round.
+
+## Historical state before release remediation
 
 - Base/HEAD before this slice: `e9ff2ee` (= `origin/cli`).
 - Desktop trees deleted; `Cargo.lock` pruned from 8958 to 2252 lines.

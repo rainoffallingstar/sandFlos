@@ -34,7 +34,9 @@ pub fn run(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
         CliError::usage("legacy configuration has no token")
             .with_stable_code("migration_source_missing_token")
     })?;
-    let status = service.import_token(&token).map_err(CliError::from_auth)?;
+    let status = service
+        .import_token_if_absent_cancellable(&token, crate::cancel::requested)
+        .map_err(CliError::from_auth)?;
     crate::output::emit_success(
         options.json,
         serde_json::json!({"migrated":true,"authorized":status.authorized,"source_preserved":true}),
