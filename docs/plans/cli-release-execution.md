@@ -50,3 +50,8 @@
 `CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true bash scripts/check_cli.sh`：退出 **0**，**267 Rust + 7 Python** 通过；fmt、严格 clippy、release 构建、依赖边界、无显示 smoke、打包和消费端校验全部通过。最终日志 `/tmp/booxctl-release-final-check2.log`。首轮测试全绿但 clippy 报 needless_return（退出101），等价修正后完整重跑；不是行为 Red。
 
 最终审查：已修复代码层 S1/S2/F1/F3/F4，R4 的 WebDAV 网络等待已可取消；Windows stdin、平台系统调用、ZIP内存上限和真实业务验收限制仍明确保留。S3/F2/R1/R2 的文档及自动演练由前序提交完成。上表人工验收和真正 tag→draft 未完成，不能宣称正式发布完成。当前代码提交后的 GitHub run 需要按精确 SHA 核验；远端结果见本次交付消息，下一轮以实际 HEAD 重查。
+
+
+### 首次远端验证与修正
+
+`701069c` 的 CLI run `41831644967`、打包演练 `41831644897` 在 Windows 严格 clippy 失败：设备临时目录 builder 的可变性仅 Unix 需要，Windows 报 `unused_mut`。Linux/macOS 打包通过；Windows 测试本身通过。父将可变 builder 限定在 Unix cfg 内，不改业务行为。失败日志 `/tmp/booxctl-ci-701069c-failed.log`。修正后的 run 仍需按最终 SHA 核实，不能用这次部分通过代替。

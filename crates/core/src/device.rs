@@ -388,12 +388,14 @@ fn command_output(program: &str, args: &[&str]) -> Option<Output> {
     use std::fs::{File, OpenOptions};
     use std::io::{Seek, SeekFrom};
     let path = std::env::temp_dir().join(format!("booxctl-probe-{}", Uuid::new_v4()));
-    let mut builder = std::fs::DirBuilder::new();
+    let builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt;
+        let mut builder = builder;
         builder.mode(0o700);
-    }
+        builder
+    };
     builder.create(&path).ok()?;
     let capture = CommandCapture(path);
     let open = |name: &str| -> std::io::Result<File> {
