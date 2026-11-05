@@ -1,5 +1,8 @@
 # GitHub 构建状态核对
 
+> **2026-11-05 最终核实**：代码 `76a42f0`，CLI run `41875934420` attempt 2 为 6/6 success；CLI release run `41875934417` attempt 2 三平台打包全部成功，draft 按分支演练设计跳过。首次 macOS runner 容量取消已通过失败任务重跑解决。详见 [最终验收记录](cli-release-execution.md)。以下旧 run 仅为历史。
+
+
 > 当前入口（2026-11-04）：发布整改、剩余技术债和人工验收以 [cli-release-execution.md](cli-release-execution.md) 为准；下列旧 SHA、数量、桌面条目和禁止提交说明均为历史，不代表当前 CLI 状态。当前轮用户已授权父 agent 提交代码，真实账号与 tag/release 仍不在授权范围。
 
 2026-10-31：用户最新明确允许父提交代码，已将此前七片已验收改动提交为 `d3810d0fb5d9646bd18b49da8535a0c6c5cd52bc` 并发布到远端cli。Git HTTPS连接github.com:443失败；父经GitHub Git Data API发布相同blob/tree/commit SHA并非强制更新ref，远端API已核实相同SHA，没有改写历史。

@@ -42,7 +42,7 @@
 - F4：ARP-only 与陈旧云端 IP 的候选选择；探测命令两秒期限、有限输出捕获和直接子进程回收。候选地址不证明服务在线。
 - S3/F2/R1/R2：此前 `46fad34` 已完成说明/升级/安装/支持矩阵及 cli push 三平台打包演练；对应 CLI run `41761845041` 成功、release rehearsal `41761845065` 成功。
 
-本轮 TDD 审计：[认证](tdd-release-auth.md)、[队列与书库](tdd-release-queue-library.md)、[设备](tdd-release-device.md)。继承代码缺失的 Red 证据明确标记；不回滚实现补造历史。统一检查、提交和新 SHA 的 CI 结果待下方补录。
+本轮 TDD 审计：[认证](tdd-release-auth.md)、[队列与书库](tdd-release-queue-library.md)、[设备](tdd-release-device.md)。继承代码缺失的 Red 证据明确标记；不回滚实现补造历史。统一检查、提交和新 SHA 的 CI 结果见下方记录。
 
 
 ### 本轮本机统一验收
@@ -55,3 +55,16 @@
 ### 首次远端验证与修正
 
 `701069c` 的 CLI run `41831644967`、打包演练 `41831644897` 在 Windows 严格 clippy 失败：设备临时目录 builder 的可变性仅 Unix 需要，Windows 报 `unused_mut`。Linux/macOS 打包通过；Windows 测试本身通过。父将可变 builder 限定在 Unix cfg 内，不改业务行为。失败日志 `/tmp/booxctl-ci-701069c-failed.log`。修正后的 run 仍需按最终 SHA 核实，不能用这次部分通过代替。
+
+
+### 2026-11-05 最终远端验收
+
+验证代码 SHA：`76a42f01a0f9a9ad8ffd5c261c55ef0bec23c211`。
+
+- CLI run `41875934420`，attempt 2：**success，6/6**。Ubuntu 24.04、macOS 15、Windows 2025 的 CLI 检查及下载产物复验全部通过。
+- CLI release run `41875934417`，attempt 2：**success，三平台 package 3/3**；分支演练不创建标签/release，draft-release 按设计 skipped。
+- attempt 1 的 macOS 任务因托管 ARM64 runner 容量不足未取得执行器而 cancelled，不是代码测试失败。2026-11-05 父执行 `gh run rerun 41875934420 --failed` 和 `gh run rerun 41875934417 --failed`，均退出0；复用已通过的 Linux/Windows 任务后完成所有剩余检查。
+- 额外下载 Linux artifact：`gh run download 41875934420 --name booxctl-ubuntu-24.04 --dir /tmp/booxctl-76a42f0-linux`；`python3 scripts/verify_cli_package.py /tmp/booxctl-76a42f0-linux` 退出0，输出 `Verified CLI package: booxctl`。
+- 原始状态快照：`/tmp/booxctl-ci-76a42f0-final.json`、`/tmp/booxctl-release-ci-76a42f0-final.json`。临时日志可能被清理，本节保存长期结论与可重查的 run ID。
+
+自动化发布整改与三平台验收已完成；上表真实平台/账号/设备/Windows 控制台和 tag→draft 验收仍未完成。后续仅更新本记录的文档提交使用 `[skip ci]`，其产品代码与上述已验证 SHA 完全相同，不将文档提交冒称具有独立 CI run。
