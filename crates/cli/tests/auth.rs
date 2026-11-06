@@ -289,3 +289,16 @@ fn non_loopback_test_auth_endpoint_is_rejected() {
     assert_eq!(value["error"]["code"], "invalid_test_auth_endpoint");
     assert!(!dir.config_dir().exists());
 }
+
+#[test]
+fn explicit_qr_providers_reach_interactive_guard() {
+    let dir = TestDir::new();
+    for provider in ["wechat", "boox"] {
+        let output = run(
+            &["--json", "auth", "login", "--qr", "--provider", provider],
+            &dir.config_dir(),
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["code"], "interactive_terminal_required");
+    }
+}

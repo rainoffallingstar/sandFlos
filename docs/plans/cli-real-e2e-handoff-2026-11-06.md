@@ -48,3 +48,20 @@
 | tag→draft正式发布 | 未执行 | 不在本次授权范围 |
 
 下一位执行者先检查本会话是否已有用户回复，复用已准备材料和已通过CI，不重复代码整改。完成后把本表更新为真实结果，再形成最终通过或失败交班。
+
+## 默认微信登录更新
+
+本机微信默认登录变更与验证记录见 [微信切片](cli-wechat-default-2026-11-06.md)。此前下载的 `/tmp/booxctl-76a42f0-linux/booxctl` 仍为 BOOX 助手扫码旧版；本次人工验收须使用工作区新构建的 `target/release/booxctl`。
+
+```bash
+export BOOXCTL_CONFIG_DIR="$HOME/.local/share/booxctl-real-e2e"
+export BOOXCTL_CREDENTIAL_STORE=file
+BOOXCTL_BIN=/home/fallingstar10/shire/sandFlos/target/release/booxctl
+unset BOOXCTL_TOKEN BOOXCTL_TEST_AUTH_BASE_URL BOOXCTL_TEST_API_BASE_URL BOOXCTL_TEST_OSS_BASE_URL
+"$BOOXCTL_BIN" auth login --qr
+# 微信扫一扫，手机确认后，等待 authorized=true
+"$BOOXCTL_BIN" --json auth status --verify
+"$BOOXCTL_BIN" devices list
+```
+
+截至本次自动执行，只有线上微信二维码显示与主动取消通过；手机扫码、账号认证成功、合成 EPUB 推送及设备收到/打开仍待用户配合。不要把旧 SHA 的 GitHub Actions 结果视作当前微信改动的远端验收结果。

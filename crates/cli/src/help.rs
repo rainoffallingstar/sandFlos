@@ -1,6 +1,8 @@
 pub const USAGE: &str = "\
 Usage: booxctl [OPTIONS] <COMMAND>
 
+QR login: booxctl auth login [--qr] [--provider wechat|boox] (default: wechat)
+
 Commands:
   auth         Manage authentication and token storage
   push         Upload files and push them to the BOOX cloud
@@ -28,6 +30,8 @@ pub const HELP: &str = "\
 booxctl sends documents to BOOX devices from the command line.
 
 Usage: booxctl [OPTIONS] <COMMAND>
+
+QR login: booxctl auth login [--qr] [--provider wechat|boox] (default: wechat)
 
 Commands:
   auth         Manage authentication and token storage

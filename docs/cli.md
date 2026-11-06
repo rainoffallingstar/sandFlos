@@ -92,8 +92,11 @@ export BOOXCTL_CREDENTIAL_STORE=file
 ### 2. 登录
 
 ```bash
-# 有交互终端：渲染二维码，用 BOOX 助手 App 扫码，5 分钟内有效
+# 有交互终端：渲染二维码，默认用微信扫码，5 分钟内有效
 booxctl auth login --qr
+
+# 备选：用 BOOX 助手 App 扫码
+booxctl auth login --qr --provider boox
 
 # 无交互环境（CI、脚本、远程）：从 stdin 读 token，绝不放进 argv
 booxctl auth import --token-stdin < ~/.secrets/boox-token
@@ -154,7 +157,7 @@ booxctl --json push ./big.pdf; echo "exit=$?"
 
 | 命令 | 子命令 | 说明 |
 | --- | --- | --- |
-| `auth` | `login --qr` | 交互扫码登录 |
+| `auth` | `login [--qr] [--provider wechat\|boox]` | 交互扫码登录，默认微信 |
 | | `import --token-stdin` | 从 stdin 读取并验证 token |
 | | `status [--verify]` | 查看本地凭据状态，可选联网校验 |
 | | `logout` | 删除 CLI 保存的凭据（不影响环境 token） |
@@ -254,3 +257,7 @@ macOS 用 `shasum -a 256 -c` 校验对应 ARM64 包；解压后将 `booxctl` 放
 - `config migrate --from` 面向旧桌面的 `auth_cache.json`，仅导入经验证的 token，不负责迁移整个旧 CLI 目录或钥匙串；源文件保留，目标已有凭据时拒绝覆盖。文件后端在持锁状态下重新检查目标并写入，因此两个并发迁移只有一个能成功；另一个返回 `credentials_already_exist`（若恰好撞上写锁则返回 `credential_store_busy`），两者都不会声称迁移成功。钥匙串在 macOS/Windows 上只能做写入前重检，无法提供同等强度的原子比较写入。
 
 不支持自动读取旧环境变量作为回退，避免不知情地使用另一个账号。
+
+微信登录默认用于 `auth login` 和 `auth login --qr`，也可显式指定 `--provider wechat`。
+二维码直接显示在终端，用微信扫一扫并确认；不会启动浏览器。登录后使用已有认证接口校验 BOOX 令牌，再保存到选择的凭据后端。`--provider boox` 保留 BOOX 助手扫码方式。
+微信请求沿用 `--timeout`（默认 20 秒），整个扫码会话最多 5 分钟；阻塞 DNS/连接/请求期间取消可能等待当前调用返回。真实微信账号须关联目标 BOOX 设备；自动测试通过不代表真实设备收件通过。

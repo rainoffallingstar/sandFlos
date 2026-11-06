@@ -14,6 +14,7 @@ pub mod push;
 pub mod services;
 pub mod state;
 pub mod util;
+pub mod wechat_login;
 pub mod zotero;
 
 pub use models::*;

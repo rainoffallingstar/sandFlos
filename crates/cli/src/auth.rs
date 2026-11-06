@@ -279,8 +279,26 @@ fn logout(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
 }
 
 fn login(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
-    if !(args.is_empty() || args == ["--qr"]) {
-        return Err(CliError::usage("usage: booxctl auth login --qr"));
+    let mut provider = "wechat";
+    let mut seen_provider = false;
+    let mut seen_qr = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--qr" if !seen_qr => seen_qr = true,
+            "--provider" if !seen_provider => {
+                provider = args.next().map(String::as_str).unwrap_or("");
+                seen_provider = true;
+            }
+            _ => {
+                return Err(CliError::usage(
+                    "usage: booxctl auth login [--qr] [--provider wechat|boox]",
+                ))
+            }
+        }
+    }
+    if !matches!(provider, "wechat" | "boox") {
+        return Err(CliError::usage("--provider must be wechat or boox"));
     }
     if options.json {
         return Err(CliError::usage(
@@ -295,13 +313,46 @@ fn login(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
         .with_stable_code("interactive_terminal_required"));
     }
     let service = service(options)?;
-    let status = service
-        .login_with_qr(
+    let status = if provider == "wechat" {
+        boox_core::wechat_login::login_with_wechat(
+            &service,
+            boox_core::wechat_login::WechatLoginEndpoints::production(),
+            Duration::from_secs(options.timeout_secs.unwrap_or(20)),
+            |qr| {
+                eprintln!("请用微信扫描二维码，并在手机上确认登录：");
+                let border = " ".repeat(qr.width() + 2);
+                eprintln!("\x1b[30;47m{border}\x1b[0m");
+                for y in (0..qr.height()).step_by(2) {
+                    eprint!("\x1b[30;47m ");
+                    for x in 0..qr.width() {
+                        let upper = qr.modules[y][x];
+                        let lower = qr.modules.get(y + 1).is_some_and(|row| row[x]);
+                        eprint!(
+                            "{}",
+                            match (upper, lower) {
+                                (true, true) => '█',
+                                (true, false) => '▀',
+                                (false, true) => '▄',
+                                (false, false) => ' ',
+                            }
+                        );
+                    }
+                    eprintln!(" \x1b[0m");
+                }
+                eprintln!("\x1b[30;47m{border}\x1b[0m");
+                eprintln!("等待微信确认；二维码会话最多 5 分钟。Ctrl-C 取消。");
+                Ok(())
+            },
+            crate::cancel::requested,
+        )
+    } else {
+        service.login_with_qr(
             QrLoginOptions::default(),
             display_qr,
             crate::cancel::requested,
         )
-        .map_err(CliError::from_auth)?;
+    }
+    .map_err(CliError::from_auth)?;
     emit_status(false, &status)
 }
 

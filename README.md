@@ -21,7 +21,7 @@ Windows 二进制名为 `booxctl.exe`。仓库通过 `rust-toolchain.toml` 固�
 # Linux 持久化登录先显式启用文件后端；macOS/Windows 默认系统钥匙串
 # export BOOXCTL_CREDENTIAL_STORE=file
 # 在交互终端显示二维码，用 BOOX 助手 App 扫码
-booxctl auth login --qr
+booxctl auth login --qr  # 默认用微信扫码；BOOX 助手用 --provider boox
 
 # 查看授权与本地凭据状态（加 --verify 才会访问网络）
 booxctl --json auth status
