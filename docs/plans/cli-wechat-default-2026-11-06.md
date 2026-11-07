@@ -37,3 +37,14 @@ HTTP 夹具使用绝对读取期限、有限写超时和真实 join；全部账�
 
 最终 release 线上显示复验命令：`python3 /tmp/booxctl-wechat-smoke.py target/release/booxctl`。
 首次辅助脚本退出 1，产品退出 4 / `socket_error`，未显示二维码、未保存凭据（`/tmp/booxctl-wechat-release-smoke.log`）。原样重试一次后辅助脚本退出 0：显示微信二维码、主动取消退出 130、未保存凭据（`/tmp/booxctl-wechat-release-smoke-retry.log`）。连接失败的根因未确定；重试成功不能证明线上连接永久稳定，也未增加自动登录重试。
+
+## 提交与远端检查（2026-11-07 跟进）
+
+产品代码已提交推送：`2f0fe1fb4a2f1e86f51a21f53ede6a442c73f032`。
+
+- CLI release run `42239177349`：success，三平台 package 3/3；draft-release 按分支演练跳过，没有创建标签或发布。
+- CLI run `42239177826` 首轮：三个 cli 构建、Linux/Windows 下载复验共 5 项 success；macOS 下载复验 cancelled，整体 failure。GitHub 注释为托管 runner 多次未取得任务及 macOS ARM64 容量限制；该任务 `runner_name` 为空，未运行产品检查。
+- `gh run rerun 42239177826 --failed` 退出 0，已请求重跑；后续状态须按该 run 与上述 SHA 核验，不能提前宣称 6/6。
+- 独立真实测试目录再次离线检查为 `authorized:false, source:none`；合成 EPUB SHA-256 与原交班记录一致，没有执行真实推送。
+
+用户说明运行于远程无头服务器，并询问浏览器授权链接方式。当前 CLI 只接入终端二维码和 token 导入；交互 SSH 可用二维码，复制一次性链接到本地浏览器授权的 CLI 入口尚未实现。core 保留的旧 LoginPortal 不代表 CLI 已支持此模式。

@@ -65,3 +65,9 @@ unset BOOXCTL_TOKEN BOOXCTL_TEST_AUTH_BASE_URL BOOXCTL_TEST_API_BASE_URL BOOXCTL
 ```
 
 截至本次自动执行，只有线上微信二维码显示与主动取消通过；手机扫码、账号认证成功、合成 EPUB 推送及设备收到/打开仍待用户配合。不要把旧 SHA 的 GitHub Actions 结果视作当前微信改动的远端验收结果。
+
+## 2026-11-07 跟进
+
+微信改动已推送产品 SHA `2f0fe1fb4a2f1e86f51a21f53ede6a442c73f032`。打包演练 run `42239177349` 三平台成功；CLI run `42239177826` 首轮 5 项成功，macOS 下载复验因托管 ARM64 runner 容量不足未取得执行器而取消，已通过 `gh run rerun 42239177826 --failed` 请求重跑。当前尚不能标记新 SHA 的 CLI 6/6 通过。
+
+真实测试目录仍未登录；用户在远程无头服务器使用，正在确认是否需要浏览器授权链接入口。现有 SSH 交互二维码可用，CLI 浏览器链接入口尚未实现。未执行真实云端推送或设备验收。
