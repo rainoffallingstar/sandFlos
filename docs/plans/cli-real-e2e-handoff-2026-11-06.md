@@ -71,3 +71,5 @@ unset BOOXCTL_TOKEN BOOXCTL_TEST_AUTH_BASE_URL BOOXCTL_TEST_API_BASE_URL BOOXCTL
 微信改动已推送产品 SHA `2f0fe1fb4a2f1e86f51a21f53ede6a442c73f032`。打包演练 run `42239177349` 三平台成功；CLI run `42239177826` 首轮 5 项成功，macOS 下载复验因托管 ARM64 runner 容量不足未取得执行器而取消，已通过 `gh run rerun 42239177826 --failed` 请求重跑。当前尚不能标记新 SHA 的 CLI 6/6 通过。
 
 真实测试目录仍未登录；用户在远程无头服务器使用，正在确认是否需要浏览器授权链接入口。现有 SSH 交互二维码可用，CLI 浏览器链接入口尚未实现。未执行真实云端推送或设备验收。
+
+最终补记：上述 CLI run 的 attempt 2 已 **success，6/6**，新产品 SHA 的三平台构建及下载复验全部通过；打包演练亦 3/3 通过。远端自动化阻塞已解除，剩余阻塞仅真实账号登录与设备验收。
