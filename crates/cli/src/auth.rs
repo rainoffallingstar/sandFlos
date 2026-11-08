@@ -282,17 +282,19 @@ fn login(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     let mut provider = "wechat";
     let mut seen_provider = false;
     let mut seen_qr = false;
+    let mut url_login = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--qr" if !seen_qr => seen_qr = true,
+            "--url" if !url_login => url_login = true,
             "--provider" if !seen_provider => {
                 provider = args.next().map(String::as_str).unwrap_or("");
                 seen_provider = true;
             }
             _ => {
                 return Err(CliError::usage(
-                    "usage: booxctl auth login [--qr] [--provider wechat|boox]",
+                    "usage: booxctl auth login [--qr | --url] [--provider wechat|boox]",
                 ))
             }
         }
@@ -300,20 +302,38 @@ fn login(options: &GlobalOptions, args: &[String]) -> Result<(), CliError> {
     if !matches!(provider, "wechat" | "boox") {
         return Err(CliError::usage("--provider must be wechat or boox"));
     }
+    if url_login && (seen_qr || provider != "wechat") {
+        return Err(CliError::usage(
+            "--url requires WeChat and cannot be combined with --qr",
+        ));
+    }
     if options.json {
         return Err(CliError::usage(
-            "auth login --qr is interactive and cannot be used with --json; use auth import --token-stdin",
+            "auth login requires human authorization and cannot be used with --json; use auth import --token-stdin",
         )
         .with_stable_code("interactive_terminal_required"));
     }
-    if options.no_input || !io::stderr().is_terminal() {
+    if !url_login && (options.no_input || !io::stderr().is_terminal()) {
         return Err(CliError::usage(
             "auth login --qr requires a terminal; use auth import --token-stdin in non-interactive runs",
         )
         .with_stable_code("interactive_terminal_required"));
     }
     let service = service(options)?;
-    let status = if provider == "wechat" {
+    let status = if url_login {
+        boox_core::wechat_login::login_with_wechat_url(
+            &service,
+            boox_core::wechat_login::WechatLoginEndpoints::production(),
+            Duration::from_secs(options.timeout_secs.unwrap_or(20)),
+            Duration::from_secs(300),
+            |url| {
+                eprintln!("在本地浏览器打开以下一次性链接，并用微信完成授权：\n{url}");
+                eprintln!("请保持此命令运行；最多等待 5 分钟，Ctrl-C 取消。请勿分享授权链接。");
+                Ok(())
+            },
+            crate::cancel::requested,
+        )
+    } else if provider == "wechat" {
         boox_core::wechat_login::login_with_wechat(
             &service,
             boox_core::wechat_login::WechatLoginEndpoints::production(),

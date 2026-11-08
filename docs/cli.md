@@ -157,7 +157,7 @@ booxctl --json push ./big.pdf; echo "exit=$?"
 
 | 命令 | 子命令 | 说明 |
 | --- | --- | --- |
-| `auth` | `login [--qr] [--provider wechat\|boox]` | 交互扫码登录，默认微信 |
+| `auth` | `login [--qr\|--url] [--provider wechat\|boox]` | 交互扫码登录，默认微信 |
 | | `import --token-stdin` | 从 stdin 读取并验证 token |
 | | `status [--verify]` | 查看本地凭据状态，可选联网校验 |
 | | `logout` | 删除 CLI 保存的凭据（不影响环境 token） |
@@ -261,3 +261,19 @@ macOS 用 `shasum -a 256 -c` 校验对应 ARM64 包；解压后将 `booxctl` 放
 微信登录默认用于 `auth login` 和 `auth login --qr`，也可显式指定 `--provider wechat`。
 二维码直接显示在终端，用微信扫一扫并确认；不会启动浏览器。登录后使用已有认证接口校验 BOOX 令牌，再保存到选择的凭据后端。`--provider boox` 保留 BOOX 助手扫码方式。
 微信请求沿用 `--timeout`（默认 20 秒），整个扫码会话最多 5 分钟；阻塞 DNS/连接/请求期间取消可能等待当前调用返回。真实微信账号须关联目标 BOOX 设备；自动测试通过不代表真实设备收件通过。
+
+### 无头服务器：本地浏览器授权
+
+在远程服务器运行（Linux 需按前文选择文件凭据后端）：
+
+```bash
+booxctl auth login --url
+# 无 TTY、禁止 stdin 交互时也支持：
+booxctl --no-input auth login --url
+```
+
+保持命令运行，将 stderr 显示的一次性链接复制到本地电脑浏览器，用微信完成页面上的授权。服务器通过出站 WebSocket 接收结果，再校验并保存 BOOX 令牌；无需服务器图形界面、浏览器、入站端口或 SSH 端口转发。成功后 stdout 显示 `authorized=true`，再运行 `booxctl --json auth status --verify`。
+
+链接包含一次性会话标识，请勿分享或粘贴到聊天、工单、公开日志。命令本身不读取 stdin；`--no-input` 不会代替浏览器中的人工确认。`--url` 只支持微信，不能与 `--qr` 或 `--provider boox` 混用；不支持 `--json`。默认二维码模式保持不变。
+
+会话最多等待五分钟，Ctrl-C 取消；网络等待仍遵守既有超时/取消限制。失败不会替换已保存凭据。回环自动测试不等于真实浏览器扫码已验收。

@@ -4,7 +4,9 @@
 //! long poll, BOOX callback, BOOX socket) without contacting any real service.
 
 use boox_core::auth_service::{AppPaths, AuthErrorKind, AuthService, FileCredentialStore};
-use boox_core::wechat_login::{login_with_wechat, WechatLoginEndpoints, WechatQr};
+use boox_core::wechat_login::{
+    login_with_wechat, login_with_wechat_url, WechatLoginEndpoints, WechatQr,
+};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -137,6 +139,11 @@ impl FlowFixture {
                 let status = if scenario == "callback_failure" && path.contains("/passport/wechat/")
                 {
                     "413 Rejected"
+                } else if scenario == "url_rejected"
+                    && path.starts_with("/api/1/users/me")
+                    && !request.contains("synthetic-old-token")
+                {
+                    "401 Unauthorized"
                 } else {
                     "200 OK"
                 };
@@ -192,9 +199,35 @@ impl FlowFixture {
                         r#"{{"action":"message","message":"{nonce} joined!","room":"{nonce}"}}"#
                     )))
                     .unwrap();
+                if scenario.starts_with("url") {
+                    while !qr_shown.load(Ordering::SeqCst)
+                        && !ws_stop.load(Ordering::SeqCst)
+                        && Instant::now() < deadline
+                    {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    if ws_stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
                 let payload = format!(
                     r#"{{"action":"pc_login_finish","data":{{"token":"{socket_token}"}}}}"#
                 );
+                if scenario == "url_idle" {
+                    while !ws_stop.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    break;
+                }
+                if scenario == "url_close" {
+                    let _ = socket.close(None);
+                    break;
+                }
+                let payload = if scenario == "url_bad_json" {
+                    "not-json".to_string()
+                } else {
+                    payload
+                };
                 let _ = socket.send(Message::Text(payload));
                 let _ = socket.flush();
                 thread::sleep(Duration::from_millis(50));
@@ -432,4 +465,124 @@ fn png_qr_also_completes_login() {
     )
     .unwrap();
     assert!(status.authorized);
+}
+
+#[test]
+fn url_login_matches_browser_state_and_verifies_before_persisting() {
+    let shown = Arc::new(AtomicBool::new(false));
+    let fixture = FlowFixture::scenario(shown.clone(), "synthetic-browser-token", "url");
+    let service = fixture.service();
+    let result = login_with_wechat_url(
+        &service,
+        WechatLoginEndpoints::loopback(&fixture.http, &fixture.ws).unwrap(),
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+        |raw| {
+            let url = url::Url::parse(raw).unwrap();
+            assert_eq!(url.path(), "/connect/qrconnect");
+            let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+            assert_eq!(query.get("appid").unwrap(), "wxdef46042a22e2e89");
+            assert_eq!(query.get("scope").unwrap(), "snsapi_login");
+            assert_eq!(
+                query.get("redirect_uri").unwrap(),
+                "https://send2boox.com/api/1/passport/wechat/pc/login"
+            );
+            assert!(!query.contains_key("f"));
+            let events = fixture.events.lock().unwrap();
+            let socket = events
+                .iter()
+                .find(|event| event.starts_with("ws:"))
+                .expect("room joined before URL");
+            let nonce = socket.split("state=").nth(1).unwrap();
+            assert_eq!(query.get("state").unwrap(), &format!("bind_login_{nonce}"));
+            shown.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+        || false,
+    )
+    .unwrap();
+    assert!(result.authorized);
+    assert!(service.status(false).unwrap().authorized);
+    let events = fixture.events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.as_str() == "/api/1/users/me")
+            .count(),
+        1
+    );
+    assert!(
+        events
+            .iter()
+            .all(|e| e.starts_with("ws:") || e == "/api/1/users/me"),
+        "server must not fetch QR or repeat the browser callback"
+    );
+}
+
+#[test]
+fn url_failures_preserve_previously_verified_credentials() {
+    for (scenario, token, expected) in [
+        (
+            "url_rejected",
+            "synthetic-rejected-token",
+            "credential_rejected",
+        ),
+        ("url_bad_json", "synthetic-token", "protocol_error"),
+        ("url", "", "protocol_error"),
+        ("url_close", "synthetic-token", "socket_closed"),
+        ("url_idle", "synthetic-token", "timeout"),
+    ] {
+        let shown = Arc::new(AtomicBool::new(false));
+        let fixture = FlowFixture::scenario(shown.clone(), token, scenario);
+        let service = fixture.service();
+        service.import_token("synthetic-old-token").unwrap();
+        let error = login_with_wechat_url(
+            &service,
+            WechatLoginEndpoints::loopback(&fixture.http, &fixture.ws).unwrap(),
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            |_| {
+                shown.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            || false,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, expected, "scenario={scenario}");
+        assert_eq!(
+            service.resolve_token().unwrap().unwrap().expose(),
+            "synthetic-old-token"
+        );
+    }
+}
+
+#[test]
+fn url_cancellation_before_or_after_link_never_saves_credentials() {
+    for cancel_before in [true, false] {
+        let shown = Arc::new(AtomicBool::new(false));
+        let cancelled = AtomicBool::new(cancel_before);
+        let fixture = FlowFixture::scenario(shown.clone(), "synthetic-cancelled-token", "url");
+        let service = fixture.service();
+        let error = login_with_wechat_url(
+            &service,
+            WechatLoginEndpoints::loopback(&fixture.http, &fixture.ws).unwrap(),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+            |_| {
+                assert!(!cancel_before, "must not display link after cancellation");
+                shown.store(true, Ordering::SeqCst);
+                cancelled.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            || cancelled.load(Ordering::SeqCst),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, AuthErrorKind::Cancelled);
+        assert!(!service.status(false).unwrap().authorized);
+        let events = fixture.events.lock().unwrap();
+        assert!(!events.iter().any(|p| p.starts_with("/api/1/users/me")));
+        if cancel_before {
+            assert!(events.is_empty());
+        }
+    }
 }

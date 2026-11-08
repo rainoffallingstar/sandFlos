@@ -302,3 +302,79 @@ fn explicit_qr_providers_reach_interactive_guard() {
         assert_eq!(value["error"]["code"], "interactive_terminal_required");
     }
 }
+
+#[test]
+fn url_login_without_tty_rejects_environment_token_before_network() {
+    let dir = TestDir::new();
+    let output = bounded_login_output(
+        command(&["--verbose", "auth", "login", "--url"], &dir.config_dir())
+            .env("BOOXCTL_TOKEN", "synthetic-url-environment-token"),
+    );
+    assert!(
+        stderr(&output).contains("environment_token_active"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!stdout(&output).contains("synthetic-url-environment-token"));
+    assert!(!dir.config_dir().exists());
+}
+
+fn bounded_login_output(command: &mut std::process::Command) -> std::process::Output {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("login preflight exceeded deadline: {}", stderr(&output));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn url_login_no_input_still_allows_external_browser_authorization() {
+    let dir = TestDir::new();
+    let output = bounded_login_output(
+        command(
+            &["--verbose", "--no-input", "auth", "login", "--url"],
+            &dir.config_dir(),
+        )
+        .env("BOOXCTL_TOKEN", "synthetic-environment-token"),
+    );
+    assert!(
+        stderr(&output).contains("environment_token_active"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn url_login_rejects_conflicting_modes_before_interaction() {
+    let dir = TestDir::new();
+    for mode in [
+        vec!["--url", "--qr"],
+        vec!["--qr", "--url"],
+        vec!["--url", "--provider", "boox"],
+        vec!["--url", "--url"],
+    ] {
+        let mut args = vec!["--json", "auth", "login"];
+        args.extend(mode);
+        let output = bounded_login_output(
+            command(&args, &dir.config_dir()).env("BOOXCTL_TOKEN", "synthetic-env"),
+        );
+        assert_eq!(
+            json_stdout(&output)["error"]["code"],
+            "usage",
+            "args={args:?}"
+        );
+        assert_eq!(output.status.code(), Some(2));
+    }
+}

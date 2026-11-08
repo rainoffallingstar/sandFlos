@@ -1,7 +1,7 @@
 pub const USAGE: &str = "\
 Usage: booxctl [OPTIONS] <COMMAND>
 
-QR login: booxctl auth login [--qr] [--provider wechat|boox] (default: wechat)
+Login: booxctl auth login [--qr | --url] [--provider wechat|boox] (default: wechat)
 
 Commands:
   auth         Manage authentication and token storage
@@ -31,7 +31,7 @@ booxctl sends documents to BOOX devices from the command line.
 
 Usage: booxctl [OPTIONS] <COMMAND>
 
-QR login: booxctl auth login [--qr] [--provider wechat|boox] (default: wechat)
+Login: booxctl auth login [--qr | --url] [--provider wechat|boox] (default: wechat)
 
 Commands:
   auth         Manage authentication and token storage

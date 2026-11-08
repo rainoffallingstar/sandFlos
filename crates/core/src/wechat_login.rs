@@ -191,6 +191,63 @@ impl WechatQr {
     }
 }
 
+/// Displays an official authorization URL after joining the BOOX login room.
+/// The caller opens the URL on another machine; only outbound connections are
+/// required here. The callback must return promptly. No token is persisted until
+/// AuthService validates it. `session_timeout` bounds the browser waiting period.
+pub fn login_with_wechat_url<F, C>(
+    service: &AuthService,
+    endpoints: WechatLoginEndpoints,
+    request_timeout: Duration,
+    session_timeout: Duration,
+    on_url: F,
+    cancel: C,
+) -> Result<AuthStatus, AuthError>
+where
+    F: FnOnce(&str) -> Result<(), AuthError>,
+    C: Fn() -> bool,
+{
+    if service.environment_token_active() {
+        return Err(AuthError::input(
+            "environment_token_active",
+            "BOOXCTL_TOKEN 已生效；请清除该环境变量后重试",
+        ));
+    }
+    if cancel() {
+        return Err(AuthError::cancelled());
+    }
+    let deadline = Instant::now() + session_timeout;
+    let nonce = Uuid::new_v4().to_string();
+    let state = format!("{STATE_PREFIX}{nonce}");
+    let mut socket = WechatSocket::connect(
+        &endpoints,
+        &state,
+        Instant::now() + request_timeout.min(remaining(deadline)),
+        &cancel,
+    )?;
+    socket.wait_for_room(
+        &nonce,
+        Instant::now() + request_timeout.min(remaining(deadline)),
+        &cancel,
+    )?;
+    if cancel() {
+        return Err(AuthError::cancelled());
+    }
+    let mut url =
+        Url::parse(&endpoints.qr_page_url(&state, &nonce)).map_err(|_| protocol_error())?;
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .filter(|(key, _)| key != "f" && key != "ts")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    url.query_pairs_mut().clear().extend_pairs(pairs);
+    on_url(url.as_str())?;
+    let token = socket
+        .receive_token(deadline, &cancel)?
+        .ok_or_else(protocol_error)?;
+    service.import_token_cancellable(&token, &cancel)
+}
+
 /// Runs the native WeChat login flow.
 ///
 /// `on_qr` is called once, after the WebSocket is connected and before the QR
