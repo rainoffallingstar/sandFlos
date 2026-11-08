@@ -73,3 +73,27 @@ unset BOOXCTL_TOKEN BOOXCTL_TEST_AUTH_BASE_URL BOOXCTL_TEST_API_BASE_URL BOOXCTL
 真实测试目录仍未登录；用户在远程无头服务器使用，正在确认是否需要浏览器授权链接入口。现有 SSH 交互二维码可用，CLI 浏览器链接入口尚未实现。未执行真实云端推送或设备验收。
 
 最终补记：上述 CLI run 的 attempt 2 已 **success，6/6**，新产品 SHA 的三平台构建及下载复验全部通过；打包演练亦 3/3 通过。远端自动化阻塞已解除，剩余阻塞仅真实账号登录与设备验收。
+
+## 2026-11-08 真实登录与推送
+
+用户使用 `897a711` 构建的 `target/release/booxctl auth login --url`，在本地浏览器完成微信授权；CLI 输出 `authorized=true, source=file`，随后 `auth status --verify` 返回 `authorized:true`、退出 0。凭据保存在用户 shell 的 `$HOME/.local/share/booxctl/auth.json`（该 shell 为 root）；为在 `fallingstar10` 执行会话中复用，用户将文件复制到 Git 忽略的 `target/private-e2e/auth.json`（目录 0700、文件 0600）。
+
+- `devices list`：退出 0，单台在线设备 `Leaf5C`，ID `1235920`，MAC `00:0c:c1:55:be:a6`；`transfer_host` 为 null，未声称局域网设备服务可达。
+- 合成 EPUB 复验：存在，1894 bytes，SHA-256 `9c524e10f67604e6c04a2ac9232341d93d2d952ba17138af896a214050ca4fbe`，与准备记录一致。
+- 推送尝试 1（默认 20 秒）：OSS 上传阶段 `network_error`，退出 4，未 accepted。
+- 推送尝试 2：OSS 上传成功，`write_message` 收到 HTTP 502，结果 `unknown`，退出 6，本地无消息 ID。
+- 推送尝试 3（`--timeout 30`）：OSS 上传阶段失败，退出 4，文档计数仍为 0。
+- 推送尝试 4（`--timeout 60`）：**accepted**，退出 0，消息 ID `17069e0d-723e-4090-9abe-d5ac468e82fb`，revision `1-d814cc26c318a677a933d17c7916a9db`，resource `69d338d37547a702f74efbfc/push/a7cad5a7-4e62-4871-92df-ae879d42d0c0.epub`。
+- 队列可见性：`queue list` 多次在 neocloud `_changes` 超时或 HTTP 502；同步令牌、`users/me`、bucket 和 STS 接口正常。直接读取已接受消息文档同样返回 502。因此“队列可见”仍未独立确认。尝试 2 的 `unknown` 发生在消息写入响应丢失时，未能核对是否留下重复记录；文档计数查询在此账号返回 0，不能作为证据。
+- 账号查询 `totalDocCount=0`、`storage_used=3385595732`；文档计数未随 accepted 更新，可能为延迟或上游故障，不能据此推断收件状态。
+
+仍需用户在 `Leaf5C` 上确认是否收到 `booxctl-e2e-5e3ff0ef.epub` 并能打开；云端 accepted 不等于设备收件。队列故障恢复后应只针对上述测试文件名和消息 ID 复核重复记录，不重推。
+
+| 验收项 | 状态 | 证据/阻塞 |
+| --- | --- | --- |
+| 真实账号认证（链接模式） | 通过 | `897a711`，`auth status --verify` authorized |
+| 指定真实设备在线 | 通过 | Leaf5C，ID 1235920 |
+| 真实BOOX/OSS推送 | 通过（云端接受） | 消息 `17069e0d-…`，退出 0 |
+| 队列可见 | 阻塞 | neocloud `_changes` 超时/502 |
+| 设备收到并打开 | 待确认 | 需用户在 Leaf5C 上核对文件名 |
+| 重复记录核对 | 阻塞 | 一次写入结果 unknown，队列不可用 |
