@@ -1022,6 +1022,9 @@ fn resend_parent_fallback_preserves_the_original_format() {
         if method == "PUT" && path.starts_with("/neocloud/") {
             return Response::json("201 Created", r#"{"id":"new-doc","rev":"1-new"}"#);
         }
+        if method == "POST" && path == "/api/1/push/saveAndPush" {
+            return Response::json("200 OK", r#"{"result_code":0,"data":{"accepted":true}}"#);
+        }
         push_fixture_routes(method, path)
     });
     queue_mutation_service(&server.endpoint)
@@ -1041,6 +1044,45 @@ fn resend_parent_fallback_preserves_the_original_format() {
     let content: Value = serde_json::from_str(doc["content"].as_str().unwrap()).unwrap();
     assert_eq!(content["formats"][0], "epub");
     assert!(content["storage"]["epub"].is_object());
+}
+
+/// A resend must also deliver the device notification. Rewriting the message
+/// record alone leaves the device unaware, which is the exact state a failed
+/// `saveAndPush` leaves behind.
+#[test]
+fn resend_delivers_the_device_notification_after_confirming_sync() {
+    let server = Loopback::with_routes(|method, path| {
+        if (method, path) == ("GET", "/neocloud/doc-fixture") {
+            return Response::json(
+                "200 OK",
+                r#"{"_id":"doc-fixture","_rev":"1-fixture","name":"book.pdf","size":42,"storageKey":"uid-fixture/push/book.pdf","content":"{\"formats\":[\"pdf\"]}"}"#,
+            );
+        }
+        if method == "PUT" && path == "/neocloud/doc-fixture" {
+            return Response::json("201 Created", r#"{"id":"doc-fixture","rev":"2-fixture"}"#);
+        }
+        if method == "POST" && path == "/api/1/push/saveAndPush" {
+            return Response::json("200 OK", r#"{"result_code":0,"data":{"accepted":true}}"#);
+        }
+        push_fixture_routes(method, path)
+    });
+    queue_mutation_service(&server.endpoint)
+        .resend("doc-fixture")
+        .unwrap();
+
+    let notification = server
+        .requests()
+        .into_iter()
+        .find(|request| {
+            request
+                .request_line
+                .starts_with("POST /api/1/push/saveAndPush")
+        })
+        .expect("resend must deliver saveAndPush");
+    let body: Value = serde_json::from_str(&notification.body).expect("notification body");
+    assert_eq!(body["cbMsg"]["id"], "doc-fixture");
+    assert_eq!(body["cbMsg"]["rev"], "2-fixture");
+    assert_eq!(body["data"]["resourceType"], "pdf");
 }
 
 #[test]

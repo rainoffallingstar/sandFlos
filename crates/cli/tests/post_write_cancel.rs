@@ -671,7 +671,10 @@ fn sigint_while_save_and_push_response_is_slow_keeps_identity_and_does_not_retry
     assert_eq!(value["error"]["code"], "push_incomplete");
     assert_eq!(value["data"]["files"].as_array().map(Vec::len), Some(2));
     assert_eq!(value["data"]["files"][0]["stage"], "save_and_push");
-    assert_eq!(value["data"]["files"][0]["outcome"], "unknown");
+    // The message document was committed before the notification was cut off,
+    // so cancellation withdraws the notification, not the acceptance.
+    assert_eq!(value["data"]["files"][0]["outcome"], "accepted");
+    assert_eq!(value["data"]["files"][0]["device_notified"], false);
     assert_eq!(value["data"]["files"][0]["error"]["kind"], "cancelled");
     let known_id = server
         .submission_id()

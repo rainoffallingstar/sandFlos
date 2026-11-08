@@ -450,6 +450,7 @@ fn fixture_response(
         ),
         ("DELETE", "/neocloud/doc-fixture") => ("200 OK", "{}".to_string()),
         ("POST", "/api/1/push/message/batchDelete") => ("200 OK", api_envelope("null")),
+        ("POST", "/api/1/push/saveAndPush") => ("200 OK", api_envelope(r#"{"accepted":true}"#)),
         ("GET", path) if path.starts_with("/uid-fixture/push/") => {
             ("206 Partial Content", String::new())
         }

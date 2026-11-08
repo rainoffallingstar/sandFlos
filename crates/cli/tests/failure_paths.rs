@@ -154,7 +154,7 @@ fn a_rejected_credential_during_push_keeps_the_per_file_report() {
 }
 
 #[test]
-fn failed_save_and_push_is_exit_6_unknown_with_the_message_id_kept() {
+fn failed_device_notification_is_accepted_and_does_not_suggest_a_retry() {
     let dir = TestDir::new();
     let server = ApiServer::start_with_fault(ApiFault::SaveAndPushFails);
     let file = dir.path().join("book.pdf");
@@ -170,16 +170,25 @@ fn failed_save_and_push_is_exit_6_unknown_with_the_message_id_kept() {
     .output()
     .expect("run booxctl");
 
-    assert_eq!(output.status.code(), Some(6), "stdout: {}", stdout(&output));
-    let value = assert_single_error_envelope(&output);
-    assert_eq!(value["error"]["code"], "push_incomplete");
-    assert_eq!(value["data"]["accepted"], 0);
-    assert_eq!(value["data"]["unknown"], 1);
-    assert_eq!(value["data"]["files"][0]["outcome"], "unknown");
+    // The message document was written, so the push succeeded in the cloud.
+    // Reporting exit 6 here is what drove duplicate re-uploads.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        stdout(&output),
+        stderr(&output)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["accepted"], 1);
+    assert_eq!(value["data"]["unknown"], 0);
+    assert_eq!(value["data"]["files"][0]["outcome"], "accepted");
     assert_eq!(value["data"]["files"][0]["stage"], "save_and_push");
+    assert_eq!(value["data"]["files"][0]["device_notified"], false);
     assert!(
         value["data"]["files"][0]["message_id"].is_string(),
-        "the accepted message id must survive for a safe retry decision: {value}"
+        "the message id must survive so the queue can be reconciled: {value}"
     );
 }
 

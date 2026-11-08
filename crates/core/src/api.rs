@@ -468,12 +468,10 @@ pub(crate) fn parse_auth_identity(user: &Value, bearer: String) -> ApiResult<Upl
 }
 
 pub(crate) fn apply_storage_quota(auth: &mut UploadAuthContext, storage: &Value) {
-    auth.storage_limit = parse_u64_field(storage, "totalSize")
-        .or_else(|| parse_u64_field(storage, "storageLimit"))
-        .or(auth.storage_limit);
-    auth.storage_used = parse_u64_field(storage, "usedSize")
-        .or_else(|| parse_u64_field(storage, "used"))
-        .or(auth.storage_used);
+    if let Some((used, limit)) = crate::util::storage_totals(storage) {
+        auth.storage_used = Some(used);
+        auth.storage_limit = Some(limit);
+    }
 }
 
 /// Resolve identity without making unrelated statistics requests.

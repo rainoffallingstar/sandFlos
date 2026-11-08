@@ -179,7 +179,7 @@ async fn resend_request(
     write_started: &AtomicBool,
 ) -> Result<(), ResendError> {
     check_before_request(flag).map_err(|_| ResendError::Cancelled)?;
-    let (_bucket_key, bucket) =
+    let (bucket_key, bucket) =
         crate::cancellable_prepare::default_bucket_request(client, endpoints, flag)
             .await
             .map_err(|error| match error {
@@ -237,7 +237,21 @@ async fn resend_request(
                     client, endpoints, auth, flag, id, &rev,
                 )
                 .await
-                .map_err(|error| ResendError::AfterSubmission(after_submission_error(error)))
+                .map_err(|error| ResendError::AfterSubmission(after_submission_error(error)))?;
+                // The document is confirmed; deliver the device notification as
+                // well, otherwise a resend only rewrites the same record and the
+                // device still never learns about it.
+                notify_device_after_resend(
+                    client,
+                    endpoints,
+                    auth,
+                    flag,
+                    &bucket_key,
+                    &raw_doc,
+                    id,
+                    &rev,
+                )
+                .await
             }
             Err(error) if resend_not_found(&error) => {
                 // The explicit 404 is a confirmed rejection of the parent PUT.
@@ -255,7 +269,9 @@ async fn resend_request(
                     ResendError::AfterSubmission(ApiError::protocol("推送记录 content 解析失败"))
                 })?;
                 let resource_type = resend_fallback_resource_type(&content);
-                crate::cancellable_push::write_message_request(
+                // The fallback created a fresh message document under a new id;
+                // its revision is what the notification must reference.
+                let (new_id, new_rev) = crate::cancellable_push::write_message_request(
                     client,
                     endpoints,
                     auth,
@@ -268,7 +284,6 @@ async fn resend_request(
                     Some(write_started),
                 )
                 .await
-                .map(|_| ())
                 .map_err(|error| match error {
                     RequestError::Cancelled if write_started.load(Ordering::Relaxed) => {
                         ResendError::AfterSubmission(ApiError::protocol(
@@ -277,13 +292,107 @@ async fn resend_request(
                     }
                     RequestError::Cancelled => ResendError::Cancelled,
                     RequestError::Api(error) => ResendError::AfterSubmission(error),
-                })
+                })?;
+                // `write_message_request` already returned the committed
+                // revision, so the fallback goes straight to the notification
+                // instead of polling the new document.
+                notify_device_after_resend(
+                    client,
+                    endpoints,
+                    auth,
+                    flag,
+                    &bucket_key,
+                    &raw_doc,
+                    &new_id,
+                    &new_rev,
+                )
+                .await
             }
             Err(error) => Err(error),
         }
     } else {
-        result.map(|_| ())
+        match result {
+            Ok((_, rev)) => {
+                let rev = rev.to_string();
+                notify_device_after_resend(
+                    client,
+                    endpoints,
+                    auth,
+                    flag,
+                    &bucket_key,
+                    &raw_doc,
+                    id,
+                    &rev,
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        }
     }
+}
+
+/// Deliver `saveAndPush` for an already committed message document.
+///
+/// A resend rewrites the message record; without this step the device is still
+/// never told about it, which is exactly the state a failed notification
+/// leaves behind. Failures past this point are reported as after-submission
+/// errors because the record itself already changed.
+#[allow(clippy::too_many_arguments)]
+async fn notify_device_after_resend(
+    client: &reqwest::Client,
+    endpoints: &ApiEndpoints,
+    auth: &UploadAuthContext,
+    flag: Option<&'static AtomicBool>,
+    bucket_key: &str,
+    raw_doc: &Value,
+    id: &str,
+    rev: &str,
+) -> Result<(), ResendError> {
+    let object_key = raw_doc
+        .get("storageKey")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let name = raw_doc.get("name").and_then(Value::as_str).unwrap_or(id);
+    let content: Value = match raw_doc.get("content") {
+        Some(Value::String(text)) => serde_json::from_str(text).unwrap_or(Value::Null),
+        Some(value) => value.clone(),
+        None => Value::Null,
+    };
+    let resource_type = resend_fallback_resource_type(&content);
+    crate::cancellable_push::save_and_push_request(
+        client,
+        endpoints,
+        auth,
+        flag,
+        bucket_key,
+        object_key,
+        name,
+        resource_type,
+        id,
+        rev,
+    )
+    .await
+    .map_err(|error| {
+        // The record is already committed, so a failed or cancelled
+        // notification must not fail the resend: reporting it as unknown would
+        // invite another resend and duplicate the record. The device simply
+        // learns about the document on its next sync.
+        let detail = match error {
+            RequestError::Cancelled => "device notification cancelled".to_string(),
+            RequestError::Api(error) => error.to_string(),
+        };
+        crate::diagnostics::warn(
+            "queue.resend.notify_device",
+            format!("doc_id={id} notification_failed=true detail={detail}"),
+        );
+        // Deliberately swallowed: the record is committed and the device
+        // syncs on its own, so this stays a success.
+        ResendError::Cancelled
+    })
+    .or_else(|error| match error {
+        ResendError::Cancelled => Ok(()),
+        other => Err(other),
+    })
 }
 
 fn after_submission_error(error: RequestError) -> ApiError {

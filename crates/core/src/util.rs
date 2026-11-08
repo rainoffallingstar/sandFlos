@@ -35,6 +35,44 @@ pub fn parse_u64_field(value: &Value, key: &str) -> Option<u64> {
     field.as_str().and_then(|raw| raw.parse::<u64>().ok())
 }
 
+/// Read the account storage totals from the `/statistics/v2/user/storage` payload.
+///
+/// The live endpoint does not return `usedSize`/`totalSize`; it returns one
+/// entry per category (`{"doc":{"data":5880440},...,"left":{"data":6882379303}}`).
+/// The used figure is the sum of every category except `left`, and `left` is
+/// the remaining space, so the quota is `used + left`. Older payloads that do
+/// carry `usedSize`/`totalSize` keep working through the first branch.
+pub fn storage_totals(value: &Value) -> Option<(u64, u64)> {
+    let direct_used = parse_u64_field(value, "usedSize").or_else(|| parse_u64_field(value, "used"));
+    let direct_limit =
+        parse_u64_field(value, "totalSize").or_else(|| parse_u64_field(value, "storageLimit"));
+    if direct_used.is_some() || direct_limit.is_some() {
+        let used = direct_used?;
+        let limit = direct_limit.or_else(|| parse_u64_field(value, "left").map(|l| used + l))?;
+        return Some((used, limit));
+    }
+
+    let object = value.as_object()?;
+    let mut used = 0_u64;
+    let mut seen_category = false;
+    let mut leftover = None;
+    for (key, entry) in object {
+        let Some(amount) = entry.get("data").and_then(Value::as_u64) else {
+            continue;
+        };
+        if key == "left" {
+            leftover = Some(amount);
+            continue;
+        }
+        seen_category = true;
+        used = used.saturating_add(amount);
+    }
+    if !seen_category {
+        return None;
+    }
+    Some((used, used.saturating_add(leftover.unwrap_or(0))))
+}
+
 pub fn parse_bool_field(value: &Value, key: &str) -> Option<bool> {
     let field = value.get(key)?;
     if let Some(raw) = field.as_bool() {
@@ -209,5 +247,40 @@ pub fn time_ago_text(ts: u128) -> String {
         format!("{}h 前", diff / 3600)
     } else {
         format!("{}d 前", diff / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn storage_totals_sums_categories_and_derives_the_quota_from_leftover() {
+        // Shape captured from the live endpoint on 2026-11-08.
+        let payload = json!({
+            "doc": {"name": "doc", "data": 5880440_u64},
+            "appData": {"name": "appDate", "data": 0_u64},
+            "push": {"name": "push", "data": 3778898256_u64},
+            "reader": {"name": "reader", "data": 70260241_u64},
+            "share": {"name": "share", "data": 0_u64},
+            "other": {"name": "other", "data": 0_u64},
+            "left": {"name": "left", "data": 6882379303_u64}
+        });
+        let (used, limit) = storage_totals(&payload).expect("category payload");
+        assert_eq!(used, 3855038937);
+        assert_eq!(limit, 10737418240);
+    }
+
+    #[test]
+    fn storage_totals_still_reads_legacy_flat_fields() {
+        let payload = json!({"usedSize": 1000_u64, "totalSize": 4000_u64});
+        assert_eq!(storage_totals(&payload), Some((1000, 4000)));
+    }
+
+    #[test]
+    fn storage_totals_rejects_payloads_without_any_category() {
+        assert_eq!(storage_totals(&json!({"left": {"data": 5_u64}})), None);
+        assert_eq!(storage_totals(&json!(null)), None);
     }
 }

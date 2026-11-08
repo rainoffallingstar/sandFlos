@@ -310,17 +310,26 @@ fn zotero_webdav_attachment_downloads_then_pushes_and_cleans_up() {
 }
 
 #[test]
-fn zotero_webdav_download_is_cleaned_up_when_submission_is_unknown() {
+fn zotero_webdav_download_is_cleaned_up_when_notification_fails() {
     let dir = TestDir::new();
     let (webdav, api, db_path, original_db) = prepare_webdav_push(&dir, ApiFault::SaveAndPushFails);
 
     let output = push_with_download(&dir, &api);
-    assert_eq!(output.status.code(), Some(6), "stdout: {}", stdout(&output));
+    // The attachment reached the cloud; only the device notification failed,
+    // which must stay an acceptance so the file is not pushed twice.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdout: {} stderr: {}",
+        stdout(&output),
+        stderr(&output)
+    );
     let value = json_stdout(&output);
-    assert_eq!(value["data"]["accepted"], 0);
-    assert_eq!(value["data"]["unknown"], 1);
-    assert_eq!(value["data"]["files"][0]["outcome"], "unknown");
+    assert_eq!(value["data"]["accepted"], 1);
+    assert_eq!(value["data"]["unknown"], 0);
+    assert_eq!(value["data"]["files"][0]["outcome"], "accepted");
     assert_eq!(value["data"]["files"][0]["stage"], "save_and_push");
+    assert_eq!(value["data"]["files"][0]["device_notified"], false);
     assert_eq!(
         api.requests()
             .iter()

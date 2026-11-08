@@ -5,7 +5,7 @@
 //! deterministic fakes and observe only the public results.
 
 use crate::api::{create_client, ApiError, ApiErrorKind};
-use crate::device::build_dashboard_devices;
+use crate::device::{build_dashboard_devices, is_online_status};
 use crate::models::{BucketConfig, DashboardDevice, DashboardPushItem, OssSts, UploadAuthContext};
 use crate::push::{build_oss_host, content_type_for, sign_oss};
 use bytes::Bytes;
@@ -144,6 +144,14 @@ pub struct PushFileResult {
     pub rev: Option<String>,
     pub resource_key: Option<String>,
     pub size: Option<u64>,
+    /// Whether this file's device notification (`saveAndPush`) was delivered.
+    ///
+    /// `None` means the notification was not attempted, either because no
+    /// device was reported online or because an earlier stage failed. The
+    /// document is still in the cloud either way; online devices replicate it
+    /// on their own, so a failed notification is not a failed push.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_notified: Option<bool>,
     pub error: Option<ServiceError>,
 }
 
@@ -330,6 +338,18 @@ pub trait PushBackend {
         doc_id: &str,
         rev: &str,
     ) -> ServiceResult<()>;
+    /// Whether at least one device is currently reachable for a notification.
+    ///
+    /// `Some(true)` means `save_and_push` is worth attempting. `Some(false)`
+    /// skips it: the document already lives in the cloud and the device will
+    /// replicate it on its next sync. `None` means the check itself failed, so
+    /// the caller still attempts the notification rather than assuming offline.
+    ///
+    /// The default keeps in-repo test doubles simple by attempting the
+    /// notification unless they opt in.
+    fn any_device_online(&mut self, _auth: &UploadAuthContext) -> Option<bool> {
+        None
+    }
 }
 
 fn fail_file<F>(
@@ -377,6 +397,7 @@ where
             rev: None,
             resource_key: None,
             size: None,
+            device_notified: None,
             error: None,
         };
 
@@ -580,6 +601,7 @@ impl<B: PushBackend> PushService<B> {
                 rev: None,
                 resource_key: None,
                 size: None,
+                device_notified: None,
                 error: Some(ServiceError::input(
                     "no_files",
                     "validate",
@@ -644,6 +666,11 @@ impl<B: PushBackend> PushService<B> {
                 return finish_results(results);
             }
         }
+
+        // Notifying a device is best-effort: the message document is already
+        // the source of truth, so ask once whether anything is reachable and
+        // skip a notification that would only fail.
+        let device_online = self.backend.any_device_online(&auth);
 
         for (index, size) in valid {
             if self.backend.cancellation_requested() {
@@ -816,6 +843,18 @@ impl<B: PushBackend> PushService<B> {
                 results[index] = Some(result);
                 continue;
             }
+            // The document is in the cloud at this point. Notification is the
+            // only remaining step, and it never decides whether the push
+            // succeeded: an offline or unreachable device simply syncs later.
+            if device_online == Some(false) {
+                result.stage = PushStage::SaveAndPush;
+                result.outcome = PushOutcome::Accepted;
+                result.device_notified = Some(false);
+                result.error = None;
+                on_progress(PushProgress::Finished(result.clone()));
+                results[index] = Some(result);
+                continue;
+            }
             on_progress(PushProgress::Phase {
                 index,
                 total,
@@ -838,22 +877,28 @@ impl<B: PushBackend> PushService<B> {
                     // file because the loop checks the flag at its top.
                     result.stage = PushStage::SaveAndPush;
                     result.outcome = PushOutcome::Accepted;
+                    result.device_notified = Some(true);
                     result.error = None;
                     on_progress(PushProgress::Finished(result.clone()));
                     results[index] = Some(result);
                     continue;
                 }
                 Err(error) => {
+                    // A failed notification leaves the document committed.
+                    // Surface it as a warning-bearing acceptance so callers do
+                    // not re-upload the same file and create a duplicate.
                     result.stage = PushStage::SaveAndPush;
-                    result.outcome = PushOutcome::Unknown;
+                    result.outcome = PushOutcome::Accepted;
+                    result.device_notified = Some(false);
                     result.error = Some(error);
                 }
             }
             let cancelled = self.backend.cancellation_requested();
             if cancelled {
-                // A completed submit is accepted; cancellation before the
-                // service records its result leaves the outcome unconfirmed.
-                result.outcome = PushOutcome::Unknown;
+                // The notification may or may not have reached the device, but
+                // the document is committed, so this is still an acceptance.
+                result.outcome = PushOutcome::Accepted;
+                result.device_notified = Some(false);
                 result.error = Some(ServiceError::cancelled("save_and_push"));
             }
             on_progress(PushProgress::Finished(result.clone()));
@@ -1589,6 +1634,27 @@ impl PushBackend for HttpPushBackend {
             crate::cancellable_push::RequestError::Api(error) => classify("save_and_push", error),
         })
     }
+
+    fn any_device_online(&mut self, auth: &UploadAuthContext) -> Option<bool> {
+        // Best-effort probe. A failed lookup returns `None` so the caller still
+        // attempts the notification instead of assuming every device is away.
+        let raw = crate::cancellable_query::devices(
+            self.timeout,
+            &self.endpoints,
+            auth,
+            self.cancel_flag,
+        )
+        .ok()?;
+        let devices = build_dashboard_devices(raw, Vec::new());
+        if devices.is_empty() {
+            return None;
+        }
+        Some(
+            devices
+                .iter()
+                .any(|device| is_online_status(device.login_status.as_deref())),
+        )
+    }
 }
 
 pub struct HttpQueueReadBackend {
@@ -1881,10 +1947,11 @@ impl QueryBackend for HttpQueryBackend {
             self.cancel_flag,
         )
         .map_err(|error| classify_request("storage", self.cancel_flag, error))?;
-        let used = crate::util::parse_u64_field(&value, "usedSize")
-            .or_else(|| crate::util::parse_u64_field(&value, "used"));
-        let limit = crate::util::parse_u64_field(&value, "totalSize")
-            .or_else(|| crate::util::parse_u64_field(&value, "storageLimit"));
+        let totals = crate::util::storage_totals(&value);
+        let (used, limit) = match totals {
+            Some((used, limit)) => (Some(used), Some(limit)),
+            None => (None, None),
+        };
         let percent = match (used, limit) {
             (Some(u), Some(l)) if l > 0 => Some(u as f64 * 100.0 / l as f64),
             _ => None,
@@ -1944,6 +2011,7 @@ mod tests {
         confirm_ok: bool,
         upload_ok: bool,
         auth_ok: bool,
+        device_online: Option<bool>,
         storage: Option<(u64, u64)>,
         wrote: RefCell<Vec<String>>,
         auth_calls: RefCell<usize>,
@@ -1958,6 +2026,7 @@ mod tests {
                 confirm_ok: true,
                 upload_ok: true,
                 auth_ok: true,
+                device_online: None,
                 storage: None,
                 wrote: RefCell::new(vec![]),
                 auth_calls: RefCell::new(0),
@@ -2033,6 +2102,9 @@ mod tests {
             } else {
                 Err(ServiceError::network("confirm_sync", "sync failed"))
             }
+        }
+        fn any_device_online(&mut self, _: &UploadAuthContext) -> Option<bool> {
+            self.device_online
         }
         fn save_and_push(
             &mut self,
@@ -2123,7 +2195,7 @@ mod tests {
     }
 
     #[test]
-    fn save_and_push_failure_is_unknown_not_success() {
+    fn failed_device_notification_still_accepted_without_duplicate_risk() {
         let path = temp_file(b"%PDF-1.7");
         let mut service = PushService::new(FakePush {
             save_ok: false,
@@ -2131,10 +2203,49 @@ mod tests {
         });
         let report = service.push_files(std::slice::from_ref(&path), |_| {});
         fs::remove_file(path).ok();
-        assert_eq!(report.accepted, 0);
-        assert_eq!(report.unknown, 1);
-        assert_eq!(report.exit_code(), 6);
+        // The message document is committed, so a failed notification must not
+        // report a failure: that is what made callers re-upload and duplicate.
+        assert_eq!(report.accepted, 1);
+        assert_eq!(report.unknown, 0);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.exit_code(), 0);
+        assert_eq!(report.files[0].outcome, PushOutcome::Accepted);
+        assert_eq!(report.files[0].device_notified, Some(false));
         assert_eq!(report.files[0].message_id.as_deref(), Some("doc-1"));
+        assert!(report.files[0].error.is_some(), "the warning must survive");
+    }
+
+    #[test]
+    fn offline_device_skips_the_notification_but_accepts_the_push() {
+        let path = temp_file(b"%PDF-1.7");
+        let mut service = PushService::new(FakePush {
+            device_online: Some(false),
+            ..FakePush::ok()
+        });
+        let report = service.push_files(std::slice::from_ref(&path), |_| {});
+        fs::remove_file(path).ok();
+        assert_eq!(report.accepted, 1);
+        assert_eq!(report.exit_code(), 0);
+        assert_eq!(report.files[0].device_notified, Some(false));
+        assert_eq!(
+            service.backend().wrote.borrow().len(),
+            0,
+            "no notification may be attempted while no device is online"
+        );
+    }
+
+    #[test]
+    fn online_device_receives_the_notification() {
+        let path = temp_file(b"%PDF-1.7");
+        let mut service = PushService::new(FakePush {
+            device_online: Some(true),
+            ..FakePush::ok()
+        });
+        let report = service.push_files(std::slice::from_ref(&path), |_| {});
+        fs::remove_file(path).ok();
+        assert_eq!(report.accepted, 1);
+        assert_eq!(report.files[0].device_notified, Some(true));
+        assert_eq!(service.backend().wrote.borrow().len(), 1);
     }
 
     #[test]

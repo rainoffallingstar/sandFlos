@@ -587,7 +587,9 @@ fn sigint_during_save_and_push_reports_unknown_and_stops_the_second_file() {
     assert_eq!(value["error"]["code"], "push_incomplete");
     assert_eq!(value["data"]["files"].as_array().map(Vec::len), Some(2));
     assert_eq!(value["data"]["files"][0]["stage"], "save_and_push");
-    assert_eq!(value["data"]["files"][0]["outcome"], "unknown");
+    // Cancelling the notification does not withdraw a committed document.
+    assert_eq!(value["data"]["files"][0]["outcome"], "accepted");
+    assert_eq!(value["data"]["files"][0]["device_notified"], false);
     assert_eq!(value["data"]["files"][0]["error"]["kind"], "cancelled");
     let message_id = value["data"]["files"][0]["message_id"]
         .as_str()

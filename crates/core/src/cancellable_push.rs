@@ -161,7 +161,7 @@ fn is_transient_write_error(error: &ApiError) -> bool {
 ///
 /// `Ok(None)` is a confirmed "not written" (HTTP 404). Any other failure is
 /// reported as an error because absence cannot be proven.
-async fn fetch_committed_rev(
+pub(crate) async fn fetch_committed_rev(
     client: &reqwest::Client,
     endpoints: &ApiEndpoints,
     auth: &UploadAuthContext,
@@ -338,7 +338,7 @@ pub(crate) async fn confirm_sync_request(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn save_and_push_request(
+pub(crate) async fn save_and_push_request(
     client: &reqwest::Client,
     endpoints: &ApiEndpoints,
     auth: &UploadAuthContext,

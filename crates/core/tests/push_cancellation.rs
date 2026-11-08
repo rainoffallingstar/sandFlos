@@ -233,7 +233,7 @@ fn cancelled_upload_stops_the_batch_before_any_message_write() {
 }
 
 #[test]
-fn cancellation_after_message_creation_is_unknown_with_the_message_id() {
+fn cancellation_during_notification_keeps_the_committed_push() {
     let temp = TempTree::new();
     let file = temp.file("book.pdf", b"book");
     let mut backend = CancellingPush::new(&CANCEL_ON_SAVE);
@@ -242,10 +242,13 @@ fn cancellation_after_message_creation_is_unknown_with_the_message_id() {
 
     let report = service.push_files(std::slice::from_ref(&file), |_| {});
 
+    // The document is already committed, so cancelling the notification must
+    // not withdraw the acceptance; it only stops the batch.
     assert_eq!(report.exit_code(), 130);
-    assert_eq!(report.accepted, 0);
-    assert_eq!(report.unknown, 1);
-    assert_eq!(report.files[0].outcome, PushOutcome::Unknown);
+    assert_eq!(report.accepted, 1);
+    assert_eq!(report.unknown, 0);
+    assert_eq!(report.files[0].outcome, PushOutcome::Accepted);
+    assert_eq!(report.files[0].device_notified, Some(false));
     assert_eq!(
         report.files[0].error.as_ref().map(|error| error.kind),
         Some(ServiceErrorKind::Cancelled)
