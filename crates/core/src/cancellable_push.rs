@@ -8,7 +8,7 @@
 use crate::api::{
     neocloud_cookie_header, parse_envelope_with_status, parse_push_item_doc,
     parse_push_message_write_response, push_doc_url, push_message_doc, save_and_push_body,
-    save_and_push_url, sync_token_url, ApiEndpoints, ApiError, ApiResult,
+    save_and_push_url, sync_token_url, ApiEndpoints, ApiError, ApiErrorKind, ApiResult,
 };
 use crate::models::{SyncToken, UploadAuthContext};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, SET_COOKIE};
@@ -22,6 +22,11 @@ const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 // chance to finish. A confirmed submission must remain accepted even when the
 // signal arrives as the server writes its success response.
 const CANCEL_DRAIN_INTERVAL: Duration = Duration::from_millis(100);
+// The message id is generated locally and carried in the request URL, so a
+// repeated PUT can only ever target the same document. A gateway that answers
+// 5xx, or a timeout, therefore leaves an ambiguity we can resolve safely
+// instead of failing the whole file.
+const WRITE_MESSAGE_ATTEMPTS: usize = 5;
 
 #[derive(Debug)]
 pub(crate) enum RequestError {
@@ -143,24 +148,58 @@ async fn parse_json_response(response: reqwest::Response) -> ApiResult<Value> {
     serde_json::from_str(&text).map_err(|_| ApiError::protocol("服务端返回了无法识别的响应"))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn write_message_request(
+/// Transient transport faults that leave the message's commit state unknown.
+fn is_transient_write_error(error: &ApiError) -> bool {
+    match error.kind {
+        ApiErrorKind::Timeout | ApiErrorKind::Network => true,
+        ApiErrorKind::HttpStatus => error.status.is_some_and(|status| status >= 500),
+        _ => false,
+    }
+}
+
+/// Ask the document store whether a previous attempt committed the message.
+///
+/// `Ok(None)` is a confirmed "not written" (HTTP 404). Any other failure is
+/// reported as an error because absence cannot be proven.
+async fn fetch_committed_rev(
     client: &reqwest::Client,
     endpoints: &ApiEndpoints,
     auth: &UploadAuthContext,
     flag: Option<&'static AtomicBool>,
-    file_name: &str,
-    size: u64,
-    resource_type: &str,
-    object_key: &str,
-    signed_url: &str,
+    doc_id: &str,
+) -> Result<Option<String>, RequestError> {
+    check_before_request(flag)?;
+    let (sync, set_cookies) = sync_token(client, endpoints, auth).await?;
+    let url = push_doc_url(endpoints, doc_id);
+    let cookie = neocloud_cookie_header(endpoints, &sync, &set_cookies, &url)?;
+    check_before_request(flag)?;
+    let response = client.get(url).header(COOKIE, cookie).send().await?;
+    let status = response.status();
+    if status.as_u16() == 404 {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(RequestError::Api(ApiError::http(status.as_u16())));
+    }
+    let text = response.text().await?;
+    let doc: Value = serde_json::from_str(&text)
+        .map_err(|_| RequestError::Api(ApiError::protocol("服务端返回了无法识别的响应")))?;
+    Ok(crate::util::json_field_to_string(&doc, "_rev")
+        .or_else(|| crate::util::json_field_to_string(&doc, "rev")))
+}
+
+async fn put_message_attempt(
+    client: &reqwest::Client,
+    endpoints: &ApiEndpoints,
+    auth: &UploadAuthContext,
+    flag: Option<&'static AtomicBool>,
+    message_id: &str,
+    message_doc: &Value,
     write_started: Option<&AtomicBool>,
 ) -> Result<(String, String), RequestError> {
     check_before_request(flag)?;
     let (sync, set_cookies) = sync_token(client, endpoints, auth).await?;
-    let (message_id, message_doc) =
-        push_message_doc(auth, file_name, size, resource_type, object_key, signed_url);
-    let url = push_doc_url(endpoints, &message_id);
+    let url = push_doc_url(endpoints, message_id);
     let cookie = neocloud_cookie_header(endpoints, &sync, &set_cookies, &url)?;
     check_before_request(flag)?;
     if let Some(write_started) = write_started {
@@ -175,7 +214,73 @@ pub(crate) async fn write_message_request(
         .send()
         .await?;
     let value = parse_json_response(response).await?;
-    parse_push_message_write_response(&value, message_id).map_err(RequestError::Api)
+    parse_push_message_write_response(&value, message_id.to_string()).map_err(RequestError::Api)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn write_message_request(
+    client: &reqwest::Client,
+    endpoints: &ApiEndpoints,
+    auth: &UploadAuthContext,
+    flag: Option<&'static AtomicBool>,
+    file_name: &str,
+    size: u64,
+    resource_type: &str,
+    object_key: &str,
+    signed_url: &str,
+    write_started: Option<&AtomicBool>,
+) -> Result<(String, String), RequestError> {
+    check_before_request(flag)?;
+    let (message_id, message_doc) =
+        push_message_doc(auth, file_name, size, resource_type, object_key, signed_url);
+    let mut last_error = None;
+
+    for attempt in 0..WRITE_MESSAGE_ATTEMPTS {
+        if cancelled(flag) {
+            return Err(RequestError::Cancelled);
+        }
+        match put_message_attempt(
+            client,
+            endpoints,
+            auth,
+            flag,
+            &message_id,
+            &message_doc,
+            write_started,
+        )
+        .await
+        {
+            Ok(value) => return Ok(value),
+            Err(RequestError::Cancelled) => return Err(RequestError::Cancelled),
+            Err(RequestError::Api(error)) => {
+                // A conflict means an earlier attempt already committed this
+                // exact id; it is recoverable, unlike a rejected payload.
+                let conflict = error.kind == ApiErrorKind::HttpStatus && error.status == Some(409);
+                if !is_transient_write_error(&error) && !conflict {
+                    return Err(RequestError::Api(error));
+                }
+                // Reconciliation is best-effort. Even when it fails, repeating
+                // the same-id PUT cannot create a second message.
+                match fetch_committed_rev(client, endpoints, auth, flag, &message_id).await {
+                    Ok(Some(rev)) => return Ok((message_id, rev)),
+                    Ok(None) => {}
+                    Err(RequestError::Cancelled) => return Err(RequestError::Cancelled),
+                    Err(RequestError::Api(_)) => {}
+                }
+                last_error = Some(error);
+            }
+        }
+        if cancelled(flag) {
+            return Err(RequestError::Cancelled);
+        }
+        if attempt + 1 < WRITE_MESSAGE_ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+        }
+    }
+
+    Err(RequestError::Api(
+        last_error.unwrap_or_else(|| ApiError::protocol("推送消息写入失败")),
+    ))
 }
 
 async fn fetch_push_doc_for_sync(

@@ -800,6 +800,181 @@ fn unconfirmed_message_write_is_unknown_and_keeps_the_resource_key() {
         .iter()
         .filter(|request| request.request_line.starts_with("PUT /neocloud/"))
         .count();
+    assert_eq!(
+        writes, 5,
+        "a persistent gateway error is retried a bounded number of times"
+    );
+    let ids = server
+        .requests()
+        .iter()
+        .filter_map(|request| request.request_line.strip_prefix("PUT /neocloud/"))
+        .map(|rest| {
+            rest.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        1,
+        "every retry must reuse the client-generated message id: {ids:?}"
+    );
+}
+
+/// A 5xx that leaves the commit state unknown must be resolved by reading the
+/// document store, not by failing the whole file: the id is client-generated,
+/// so a repeated PUT can only ever target the same document.
+#[test]
+fn write_message_retries_the_same_id_after_a_transient_gateway_error() {
+    let commits = Arc::new(Mutex::new(0_usize));
+    let observed = Arc::clone(&commits);
+    let server = Loopback::with_routes(move |method, path| {
+        if method == "PUT" && path.starts_with("/neocloud/") {
+            let mut count = observed.lock().expect("put counter");
+            *count += 1;
+            return if *count == 1 {
+                Response::json("502 Bad Gateway", "{}")
+            } else {
+                Response::json("201 Created", r#"{"id":"same","rev":"1-fixture"}"#)
+            };
+        }
+        if method == "GET" && path.starts_with("/neocloud/") {
+            // Before the successful PUT the document is absent; afterwards it
+            // exists, so confirm_sync can observe the committed revision.
+            let id = path.trim_start_matches("/neocloud/");
+            if *observed.lock().expect("put counter") < 2 {
+                return Response::json("404 Not Found", r#"{"error":"not_found"}"#);
+            }
+            return Response::json(
+                "200 OK",
+                serde_json::json!({
+                    "_id": id,
+                    "_rev": "1-fixture",
+                    "name": "retry.pdf",
+                    "size": 11,
+                    "content": r#"{"formats":["pdf"]}"#,
+                })
+                .to_string(),
+            );
+        }
+        if method == "POST" && path == "/api/1/push/saveAndPush" {
+            return Response::json("200 OK", r#"{"result_code":0,"data":{"accepted":true}}"#);
+        }
+        push_fixture_routes(method, path)
+    });
+    let path = std::env::temp_dir().join(format!("retry-{}.pdf", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"fixture PDF").unwrap();
+    let backend = boox_core::services::HttpPushBackend::with_test_endpoints(
+        Duration::from_secs(2),
+        "fixture-token",
+        &server.endpoint,
+        &server.endpoint,
+    )
+    .unwrap();
+    let report = boox_core::services::PushService::new(backend)
+        .push_files(std::slice::from_ref(&path), |_| {});
+    std::fs::remove_file(path).unwrap();
+
+    assert_eq!(
+        (report.exit_code(), report.accepted, report.unknown),
+        (0, 1, 0),
+        "{:?}",
+        report.files[0]
+    );
+    assert_eq!(report.files[0].rev.as_deref(), Some("1-fixture"));
+    let writes = server
+        .requests()
+        .iter()
+        .filter(|request| request.request_line.starts_with("PUT /neocloud/"))
+        .count();
+    assert_eq!(writes, 2);
+}
+
+/// A lost success response must be reconciled by reading the document back
+/// instead of re-uploading the message as a second record.
+#[test]
+fn write_message_reconciles_a_committed_message_after_a_lost_response() {
+    let server = Loopback::with_routes(|method, path| {
+        if method == "PUT" && path.starts_with("/neocloud/") {
+            return Response::json("504 Gateway Timeout", "{}");
+        }
+        if method == "GET" && path.starts_with("/neocloud/") {
+            let id = path.trim_start_matches("/neocloud/");
+            return Response::json(
+                "200 OK",
+                serde_json::json!({
+                    "_id": id,
+                    "_rev": "3-committed",
+                    "name": "book.pdf",
+                    "size": 42,
+                    "content": r#"{"formats":["pdf"]}"#,
+                })
+                .to_string(),
+            );
+        }
+        if method == "POST" && path == "/api/1/push/saveAndPush" {
+            return Response::json("200 OK", r#"{"result_code":0,"data":{"accepted":true}}"#);
+        }
+        push_fixture_routes(method, path)
+    });
+    let path = std::env::temp_dir().join(format!("reconcile-{}.pdf", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"fixture PDF").unwrap();
+    let backend = boox_core::services::HttpPushBackend::with_test_endpoints(
+        Duration::from_secs(2),
+        "fixture-token",
+        &server.endpoint,
+        &server.endpoint,
+    )
+    .unwrap();
+    let report = boox_core::services::PushService::new(backend)
+        .push_files(std::slice::from_ref(&path), |_| {});
+    std::fs::remove_file(path).unwrap();
+
+    assert_eq!(
+        (report.exit_code(), report.accepted, report.unknown),
+        (0, 1, 0),
+        "{:?}",
+        report.files[0]
+    );
+    assert_eq!(report.files[0].rev.as_deref(), Some("3-committed"));
+    let writes = server
+        .requests()
+        .iter()
+        .filter(|request| request.request_line.starts_with("PUT /neocloud/"))
+        .count();
+    assert_eq!(writes, 1, "reconciliation must not repeat the write");
+}
+
+/// A rejected payload (4xx that is not a conflict) is final; retrying it would
+/// only repeat a known-bad request.
+#[test]
+fn write_message_does_not_retry_a_rejected_payload() {
+    let server = Loopback::with_routes(|method, path| {
+        if method == "PUT" && path.starts_with("/neocloud/") {
+            return Response::json("400 Bad Request", r#"{"error":"bad_request"}"#);
+        }
+        push_fixture_routes(method, path)
+    });
+    let path = std::env::temp_dir().join(format!("reject-{}.pdf", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"fixture PDF").unwrap();
+    let backend = boox_core::services::HttpPushBackend::with_test_endpoints(
+        Duration::from_secs(2),
+        "fixture-token",
+        &server.endpoint,
+        &server.endpoint,
+    )
+    .unwrap();
+    let report = boox_core::services::PushService::new(backend)
+        .push_files(std::slice::from_ref(&path), |_| {});
+    std::fs::remove_file(path).unwrap();
+
+    assert_eq!(report.accepted, 0);
+    let writes = server
+        .requests()
+        .iter()
+        .filter(|request| request.request_line.starts_with("PUT /neocloud/"))
+        .count();
     assert_eq!(writes, 1);
 }
 
