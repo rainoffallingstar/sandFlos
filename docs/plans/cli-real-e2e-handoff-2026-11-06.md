@@ -97,3 +97,13 @@ unset BOOXCTL_TOKEN BOOXCTL_TEST_AUTH_BASE_URL BOOXCTL_TEST_API_BASE_URL BOOXCTL
 | 队列可见 | 阻塞 | neocloud `_changes` 超时/502 |
 | 设备收到并打开 | 待确认 | 需用户在 Leaf5C 上核对文件名 |
 | 重复记录核对 | 阻塞 | 一次写入结果 unknown，队列不可用 |
+
+## 2026-11-08 设备收件确认
+
+用户在 `Leaf5C` 上确认已收到 `booxctl-e2e-5e3ff0ef.epub`，并明确表示**没有出现两份同名文件**。因此：
+
+- 云端 accepted 已由真实设备收件确认；这是本轮端到端的主要成功证据。
+- 先前 `write_message` 的 `unknown` 未造成可见重复收件；但队列接口持续超时/502，仍无法用服务端队列记录独立核对文档内容或历史。
+- 收件码与文件可打开性：用户只确认收到且无重复，未提供收件码核对结果；不把收件本身扩展解释为“已核对收件码”或“设备可打开”。
+- 后续队列恢复时可只查询该测试文件名/消息 ID；除非用户要求，不重推、不删除设备或云端测试记录。
+- 真实凭据副本位于 Git 忽略的 `target/private-e2e/auth.json`（0600）；不再需要时可由用户删除。
