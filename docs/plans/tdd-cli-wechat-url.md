@@ -53,3 +53,10 @@ HTTP 读写与子进程等待必须有界，线程真实 join，所有凭据为�
 - 线上无 TTY 冒烟（release 二进制）：`python3 /tmp/booxctl-url-smoke.py target/release/booxctl` 退出 0；`no_tty_url_displayed=true`、`official_qr_page_accessible=true`、CLI 退出 130、`credentials_saved=false`。
 
 以上冒烟只验证无 TTY 入口和官方授权页可达，未扫码；真实浏览器回调、微信确认、真实令牌保存与后续设备推送仍需人工验收。
+
+## 提交与远端结果
+
+- 代码与文档提交：`897a711`（`feat(cli): add headless WeChat browser login`），已推送 `origin/cli`。工作区在该提交后干净。
+- CLI run `42437356734`：**success，6/6**。Ubuntu 24.04、macOS 15、Windows Server 2025 的 `cli` 检查与 `verify-package` 下载产物复验全部成功。
+- CLI release run `42437356730`：**success，三平台 package 3/3**；`draft-release` 按分支演练设计 skipped，未创建标签或 release。
+- 未验收：真实微信扫码与手机确认、真实浏览器到 BOOX 回调、真实令牌保存、目标设备收件。需要用 `--url` 的链接在本地浏览器完成一次人工登录后才算通过。
